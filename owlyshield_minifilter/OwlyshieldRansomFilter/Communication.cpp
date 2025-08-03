@@ -223,60 +223,16 @@ RWFNewMessage(
             return STATUS_SUCCESS;
         }
         ULONGLONG pidsReturned = 0;
-        isGidExist =
-            driverData->GetGidPids(GID, Buffer, gidSize, &pidsReturned);
-        if (isGidExist) {  // got all irps and correct size
-            for (int i = 0; i < gidSize; i++) {  // kill each process
-                CLIENT_ID clientId;
-                clientId.UniqueProcess = (HANDLE)Buffer[i];
-                clientId.UniqueThread = 0;
-
-                OBJECT_ATTRIBUTES objAttribs;
-                NTSTATUS exitStatus = STATUS_FAIL_CHECK;
-
-                DbgPrint(
-                    "!!! FS : Attempt to terminate pid: %d from gid: %d\n",
-                    Buffer[i],
-                    GID);
-
-                InitializeObjectAttributes(
-                    &objAttribs,
-                    NULL,
-                    OBJ_KERNEL_HANDLE,
-                    NULL,
-                    NULL);
-
-                status = ZwOpenProcess(
-                    &processHandle,
-                    PROCESS_ALL_ACCESS,
-                    &objAttribs,
-                    &clientId);
-
-                if (!NT_SUCCESS(status)) {
-                    *((PLONG)OutputBuffer) = STATUS_FAIL_CHECK;  // fail
-                    DbgPrint(
-                        "!!! FS : Failed to open process %d, reason: %d\n",
-                        Buffer[i],
-                        status);
-                    continue;  // try to kill others
-                }
-                status = ZwTerminateProcess(processHandle, exitStatus);
-                if (!NT_SUCCESS(status)) {
-                    *((PLONG)OutputBuffer) = STATUS_FAIL_CHECK;  // fail
-                    DbgPrint(
-                        "!!! FS : Failed to kill process %d, reason: %d\n",
-                        Buffer[i],
-                        status);
-                    status = NtClose(processHandle);
-                    continue;  // try to kill others
-                }
-                NtClose(processHandle);
-
-                DbgPrint(
-                    "!!! FS : Termination of pid: %d from gid: %d succeeded\n",
-                    Buffer[i],
-                    GID);
+        isGidExist = driverData->GetGidPids(GID, Buffer, gidSize, &pidsReturned);
+        if (isGidExist)
+        { // got all irps and correct size
+            for (int i = 0; i < gidSize; i++)
+            { // warn about each process instead of killing
+                DbgPrint("!!! FS WARNING: Suspicious activity detected in PID: %d from GID: %d\n", Buffer[i], GID);
             }
+            // Log successful detection without termination
+            DbgPrint("!!! FS : Detection completed for GID: %d with %d processes\n", GID, (int)gidSize);
+            *((PLONG)OutputBuffer) = STATUS_SUCCESS; // Detection successful
         }
         ExFreePoolWithTag(Buffer, 'RW');
         return STATUS_SUCCESS;
