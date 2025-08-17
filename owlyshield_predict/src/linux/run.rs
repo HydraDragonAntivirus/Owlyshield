@@ -13,14 +13,11 @@ use crate::threathandling::LinuxThreatHandler;
 use crate::whitelist;
 use crate::Connectors;
 use crate::ExepathLive;
-<<<<<<< HEAD
 use crate::ProcessRecordHandlerLive;
 use crate::ProcessRecordHandlerNovelty;
 use crate::IOMsgPostProcessorWriter;
 use crate::IOMsgPostProcessorRPC;
-=======
 use crate::IOMessage;
->>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 use crate::IOMsgPostProcessorMqtt;
 use crate::IOMsgPostProcessorRPC;
 use crate::IOMsgPostProcessorWriter;
@@ -33,7 +30,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::mpsc::channel;
 use std::thread;
-<<<<<<< HEAD
 use crate::config::Param;
 use crate::driver_com::Buf;
 use crate::watchlist::WatchList;
@@ -47,7 +43,6 @@ fn probe_code() -> &'static [u8] {
         // "/home/fedora/redbpf_test/target/bpf/programs/openmonitor/openmonitor.elf"
     )
 }
-=======
 
 use aya::maps::perf::AsyncPerfEventArray;
 use aya::programs::KProbe;
@@ -59,7 +54,6 @@ use ebpf_monitor_common::*;
 use log::{debug, info, warn};
 use tokio::signal;
 use tokio::task;
->>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
 #[tokio::main(flavor = "current_thread")]
 pub async fn run() -> Result<(), anyhow::Error> {
@@ -81,13 +75,10 @@ pub async fn run() -> Result<(), anyhow::Error> {
             .unwrap();
         let mut worker = Worker::new_replay(&config, &whitelist);
 
-<<<<<<< HEAD
         let filename =
             &Path::new(&config[Param::ProcessActivityLogPath]).join(Path::new("drivermessages.txt"));
-=======
         let filename = &Path::new(&config[config::Param::ProcessActivityLogPath])
             .join(Path::new("drivermessages.txt"));
->>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
         let mut file = File::open(Path::new(filename)).unwrap();
         let file_len = file.metadata().unwrap().len() as usize;
 
