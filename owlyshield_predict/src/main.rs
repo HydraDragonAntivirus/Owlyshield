@@ -35,6 +35,33 @@ use crate::connectors::register::Connectors;
 #[cfg(target_os = "windows")]
 use crate::driver_com::Driver;
 #[cfg(target_os = "windows")]
+use std::{env, path::Path, sync::LazyLock};
+#[cfg(target_os = "windows")]
+use crate::av_integration::AVIntegration;
+
+
+#[cfg(target_os = "windows")]
+pub static HYDRA_DRAGON_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    env::var("ProgramFiles")
+        .map(|pf| Path::new(&pf).join("HydraDragonAntivirus").exists())
+        .unwrap_or(false)
+});
+
+#[cfg(target_os = "windows")]
+pub static HYDRA_DRAGON_INTEGRATION: LazyLock<Option<AVIntegration>> = LazyLock::new(|| {
+    if *HYDRA_DRAGON_ENABLED {
+        let path = env::var("ProgramFiles")
+            .map(|pf| Path::new(&pf)
+            .join("HydraDragonAntivirus")
+            .join("av_events.json"))
+            .ok();
+        path.map(|p| AVIntegration::new(p, 100))
+    } else {
+        None
+    }
+});
+
+#[cfg(target_os = "windows")]
 use crate::driver_com::CDriverMsgs;
 #[cfg(target_os = "linux")]
 use crate::driver_com::LDriverMsg;
@@ -44,6 +71,8 @@ use crate::worker::process_record_handling::{ExepathLive, ProcessRecordHandlerLi
 use crate::worker::worker_instance::{IOMsgPostProcessorMqtt, IOMsgPostProcessorRPC, IOMsgPostProcessorWriter, Worker};
 
 mod actions_on_kill;
+#[cfg(target_os = "windows")]
+mod av_integration;
 mod config;
 mod connectors;
 mod csvwriter;

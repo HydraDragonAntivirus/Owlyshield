@@ -82,6 +82,7 @@ impl IrpMajorOp {
 }
 
 /// See [`shared_def::IOMessage`] struct and [this doc](https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdrivetypea).
+#[derive(Debug)]
 pub enum DriveType {
     /// The drive type cannot be determined.
     Unknown,

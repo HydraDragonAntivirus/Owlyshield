@@ -33,7 +33,6 @@ use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, SystemTime};
 use std::{fmt, thread};
-
 use slc_paths::clustering::{clustering, Clusters};
 use sysinfo::{Pid, ProcessExt, ProcessStatus, System, SystemExt};
 
@@ -50,6 +49,9 @@ use crate::shared_def::{
 
 use crate::extensions::ExtensionsCount;
 use crate::novelty::DirectoriesContent;
+#[cfg(target_os = "windows")]
+use crate::av_integration::AVIntegration;
+
 
 /// GID state in real-time. This is a central structure.
 ///
@@ -266,8 +268,7 @@ impl ProcessRecord {
         }
     }
 
-    /// Entry point to call on new drivermsg.
-    pub fn add_irp_record(&mut self, iomsg: &IOMessage) {
+    pub fn add_irp_record(&mut self, iomsg: &IOMessage, av_integration: Option<&mut AVIntegration>) {
         self.driver_msg_count += 1;
         self.pids.insert(iomsg.pid.into());
         self.exe_exists = iomsg.runtime_features.exe_still_exists;
@@ -286,6 +287,11 @@ impl ProcessRecord {
         }
         self.update_clusters();
         self.time = iomsg.time;
+
+        #[cfg(target_os = "windows")]
+        if let Some(av) = av_integration {
+            av.queue_file_event(iomsg, self);
+        }
     }
 
     fn update_read(&mut self, iomsg: &IOMessage) {
@@ -730,7 +736,7 @@ mod tests {
         let mut pr = ProcessRecord::from(&iomsgs[0], "".to_string(), "".parse().unwrap());
 
         for iomsg in iomsgs {
-            pr.add_irp_record(&iomsg);
+            pr.add_irp_record(&iomsg, None);
         }
 
         assert_eq!(pr.ops_read, 2);

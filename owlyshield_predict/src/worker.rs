@@ -638,6 +638,12 @@ pub mod worker_instance {
     use crate::jsonrpc::{Jsonrpc, RPCMessage};
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::worker::threat_handling::ThreatHandler;
+    #[cfg(target_os = "windows")]
+    use std::env;
+    #[cfg(target_os = "windows")]
+    use crate::av_integration::AVIntegration;
+    #[cfg(target_os = "windows")]
+    use crate::HYDRA_DRAGON_ENABLED;
 
     pub trait IOMsgPostProcessor {
         fn postprocess(&mut self, iomsg: &mut IOMessage, precord: &ProcessRecord);
@@ -747,18 +753,31 @@ pub mod worker_instance {
         process_record_handler: Option<Box<dyn ProcessRecordIOHandler + 'a>>,
         exepath_handler: Box<dyn Exepath>,
         iomsg_postprocessors: Vec<Box<dyn IOMsgPostProcessor>>,
+        #[cfg(target_os = "windows")]
+        av_integration: Option<AVIntegration>, 
     }
 
     impl<'a> Worker<'a> {
-        pub fn new() -> Worker<'a> {
-            Worker {
-                whitelist: None,
-                process_records: ProcessRecords::new(),
-                process_record_handler: None,
-                exepath_handler: Box::<ExepathLive>::default(),
-                iomsg_postprocessors: vec![],
-            }
-        }
+		pub fn new() -> Worker<'a> {
+			Worker {
+				whitelist: None,
+				process_records: ProcessRecords::new(),
+				process_record_handler: None,
+				exepath_handler: Box::<ExepathLive>::default(),
+				iomsg_postprocessors: vec![],
+			    #[cfg(target_os = "windows")]
+			    av_integration: if *HYDRA_DRAGON_ENABLED {
+				    let path = env::var("ProgramFiles")
+					    .map(|pf| Path::new(&pf)
+					    .join("HydraDragonAntivirus")
+					    .join("av_events.json"))
+					    .ok();
+				    path.map(|p| AVIntegration::new(p, 100))
+				} else {
+					None
+				},
+			}
+		}
 
         pub fn whitelist(mut self, whitelist: &'a WhiteList) -> Worker<'a> {
             self.whitelist = Some(whitelist);
@@ -790,20 +809,28 @@ pub mod worker_instance {
             self
         }
 
-        pub fn new_replay(config: &'a Config, whitelist: &'a WhiteList) -> Worker<'a> {
-            Worker {
-                whitelist: Some(whitelist),
-                process_records: ProcessRecords::new(),
-                process_record_handler: Some(Box::new(ProcessRecordHandlerReplay::new(config))),
-                exepath_handler: Box::<ExePathReplay>::default(),
-                iomsg_postprocessors: vec![],
-            }
-        }
+		pub fn new_replay(config: &'a Config, whitelist: &'a WhiteList) -> Worker<'a> {
+			Worker {
+				whitelist: Some(whitelist),
+				process_records: ProcessRecords::new(),
+				process_record_handler: Some(Box::new(ProcessRecordHandlerReplay::new(config))),
+				exepath_handler: Box::<ExePathReplay>::default(),
+				iomsg_postprocessors: vec![],
+                #[cfg(target_os = "windows")]
+                av_integration: None,
+			}
+		}
 
         pub fn process_io(&mut self, iomsg: &mut IOMessage) {
             self.register_precord(iomsg);
             if let Some(precord) = self.process_records.get_precord_mut_by_gid(iomsg.gid) {
-                precord.add_irp_record(iomsg);
+                #[cfg(target_os = "windows")]
+                let av_integration = self.av_integration.as_mut();
+                #[cfg(not(target_os = "windows"))]
+                let av_integration = None;
+
+                precord.add_irp_record(iomsg, av_integration);
+
                 if let Some(process_record_handler) = &mut self.process_record_handler {
                     process_record_handler.handle_io(precord);
                 }
