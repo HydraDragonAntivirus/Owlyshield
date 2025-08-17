@@ -8,6 +8,29 @@ license-file = "LICENSE.txt"
 moonfire-tflite = { path = "moonfire-tflite" }
 slc-paths = { path = "slc-paths" }
 win-pe-inspection = { path = "win-pe-inspection" }
+<<<<<<< HEAD
+wchar = "0.11.0"
+registry = "1.2.0"
+strum = "0.24.1"
+strum_macros = "0.24.2"
+byteorder = "1.4.3"
+chrono = { version = "0.4.19", features = ["serde"] }
+num = "0.4.0"
+num-derive = "0.3.3"
+num-traits = "0.2.15"
+serde = { version = "1.0.140", features = ["derive"] }
+serde_json = "1.0.82"
+serde_yaml = "0.9.17"
+log = "0.4.17"
+rmp-serde = "1.1.0"
+hostname = "0.3.1"
+curl = "0.4.43"
+jsonrpc-http-server = "18.0.0"
+configparser = "3.0.2"
+rumqtt = "0.31.0"
+lru = "0.9.0"
+sysinfo = "0.27.7"
+=======
 wchar = "0.11"
 registry = "1.2"
 strum = "0.24"
@@ -28,6 +51,7 @@ configparser = "3.0"
 rumqtt = "0.31"
 lru = "^0.11"
 sysinfo = "0.28"
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
 #Windows
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -71,3 +95,4 @@ record = []
 replay = []
 jsonrpc = []
 mqtt = []
+novelty = []

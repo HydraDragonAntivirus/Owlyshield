@@ -13,7 +13,14 @@ use crate::threathandling::LinuxThreatHandler;
 use crate::whitelist;
 use crate::Connectors;
 use crate::ExepathLive;
+<<<<<<< HEAD
+use crate::ProcessRecordHandlerLive;
+use crate::ProcessRecordHandlerNovelty;
+use crate::IOMsgPostProcessorWriter;
+use crate::IOMsgPostProcessorRPC;
+=======
 use crate::IOMessage;
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 use crate::IOMsgPostProcessorMqtt;
 use crate::IOMsgPostProcessorRPC;
 use crate::IOMsgPostProcessorWriter;
@@ -26,6 +33,21 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::mpsc::channel;
 use std::thread;
+<<<<<<< HEAD
+use crate::config::Param;
+use crate::driver_com::Buf;
+use crate::watchlist::WatchList;
+
+fn probe_code() -> &'static [u8] {
+    include_bytes!(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/target/bpf/programs/openmonitor/openmonitor.elf"
+        )
+        // "/home/fedora/redbpf_test/target/bpf/programs/openmonitor/openmonitor.elf"
+    )
+}
+=======
 
 use aya::maps::perf::AsyncPerfEventArray;
 use aya::programs::KProbe;
@@ -37,6 +59,7 @@ use ebpf_monitor_common::*;
 use log::{debug, info, warn};
 use tokio::signal;
 use tokio::task;
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
 #[tokio::main(flavor = "current_thread")]
 pub async fn run() -> Result<(), anyhow::Error> {
@@ -53,13 +76,18 @@ pub async fn run() -> Result<(), anyhow::Error> {
         println!("Replay Driver Messages");
         let config = config::Config::new();
         let whitelist = whitelist::WhiteList::from(
-            &Path::new(&config[config::Param::ConfigPath]).join(Path::new("exclusions.txt")),
+            &Path::new(&config[Param::ConfigPath]).join(Path::new("exclusions.txt")),
         )
             .unwrap();
         let mut worker = Worker::new_replay(&config, &whitelist);
 
+<<<<<<< HEAD
+        let filename =
+            &Path::new(&config[Param::ProcessActivityLogPath]).join(Path::new("drivermessages.txt"));
+=======
         let filename = &Path::new(&config[config::Param::ProcessActivityLogPath])
             .join(Path::new("drivermessages.txt"));
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
         let mut file = File::open(Path::new(filename)).unwrap();
         let file_len = file.metadata().unwrap().len() as usize;
 
@@ -116,11 +144,17 @@ pub async fn run() -> Result<(), anyhow::Error> {
             //NEW
             thread::spawn(move || {
                 let whitelist = whitelist::WhiteList::from(
-                    &Path::new(&config[config::Param::ConfigPath])
+                    &Path::new(&config[Param::ConfigPath])
                         .join(Path::new("exclusions.txt")),
                 )
                     .expect("Cannot open exclusions.txt");
                 whitelist.refresh_periodically();
+
+                let watchlist = WatchList::from(
+                    &Path::new(&config[Param::NoveltyPath])
+                        .join(Path::new("to_analyze.yml")),
+                ).expect("Cannot open to_analyze.yml");
+                watchlist.refresh_periodically();
 
                 let mut worker = Worker::new();
 
@@ -132,6 +166,13 @@ pub async fn run() -> Result<(), anyhow::Error> {
                         .process_record_handler(Box::new(ProcessRecordHandlerLive::new(
                             &config,
                             Box::new(LinuxThreatHandler::default()),
+                        )));
+                }
+
+                if cfg!(feature = "novelty") {
+                    worker = worker
+                        .process_record_handler(Box::new(ProcessRecordHandlerNovelty::new(
+                            &config, watchlist,
                         )));
                 }
 

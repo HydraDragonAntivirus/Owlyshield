@@ -206,6 +206,8 @@ pub mod process_record_handling {
     };
     #[cfg(target_os = "linux")]
     use std::path::Path;
+    use chrono::Local;
+    use lru::LruCache;
 
     use crate::actions_on_kill::ActionsOnKill;
     use crate::config::{Config, KillPolicy, Param};
@@ -214,7 +216,12 @@ pub mod process_record_handling {
     use crate::process::{ProcessRecord, ProcessState};
     use crate::worker::predictor::{PredictorHandler, PredictorMalware};
     use crate::IOMessage;
+<<<<<<< HEAD
+    use crate::watchlist::WatchList;
+    use crate::novelty::{Rule, StateSave};
+=======
     use crate::worker::threat_handling::ThreatHandler;
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
     pub trait Exepath {
         fn exepath(&self, iomsg: &IOMessage) -> Option<PathBuf>;
@@ -410,6 +417,111 @@ pub mod process_record_handling {
             }
         }
     }
+<<<<<<< HEAD
+
+    #[cfg(target_os = "windows")]
+    fn try_suspend(proc: &mut ProcessRecord) {
+        proc.process_state = ProcessState::Suspended;
+        for pid in &proc.pids {
+            unsafe {
+                DebugActiveProcess(*pid);
+            }
+        }
+    }
+
+    pub struct ProcessRecordHandlerNovelty<'a> {
+        config: &'a Config,
+        watchlist: WatchList,
+        rules: LruCache<String, Rule>,
+    }
+
+    impl ProcessRecordIOHandler for ProcessRecordHandlerNovelty<'_> {
+        fn handle_io(&mut self, precord: &mut ProcessRecord) {
+            if precord.driver_msg_count % 5 == 0 { // Limit use of resources
+                if self.watchlist.is_app_watchlisted(precord.appname.as_str()) {
+                    let novelty_path = self.config[Param::NoveltyPath].as_str();
+                    let app_file = &precord.appname.replace(".", "_");
+                    let now = Local::now();
+                    let mut rule;
+
+                    match self.rules.get(app_file) {
+                        Some(r) => {
+                            // rule file loaded
+                            rule = r.to_owned();
+                        },
+                        None => {
+                            // rule file is not loaded
+                            let path = PathBuf::from(novelty_path).join(app_file.to_string() + ".yml");
+                            if Rule::get_files(novelty_path).contains(app_file) {
+                                // rule file exists
+                                rule = Rule::deserialize_yml_file(path);
+                                let pathsave = PathBuf::from(novelty_path).join(app_file.to_string() + "_save.json");
+                                let savestate = StateSave::load_file(&pathsave).unwrap();
+                                savestate.update_precord(precord);
+                            } else {
+                                // rule file does not exists. Let's create it
+                                rule = Rule::from(precord);
+                                Rule::serialize_yml_file(path, rule.clone());
+                            }
+                            // update cache
+                            self.rules.push(app_file.to_string(), rule.clone());
+                        },
+                    }
+
+                    // JD == 0 => subcluster to ignore
+                    // 0 < JD < 1 => cluster is expanding. To report.
+                    // JD == 1 => Distinct cluster to report
+                    if precord.driver_msg_count % 50 == 0 {
+                        // update the rule in memory
+                        let mut newrule = rule.learn(precord);
+                        //prediction here
+                        if !newrule.is_clusters_empty() {
+                            let dis = rule.distance(&newrule, precord);
+                            let opt_clusterdistance_min = dis.iter().min_by(|cd1, cd2| cd1.distance.partial_cmp(&cd2.distance).unwrap_or(std::cmp::Ordering::Equal));
+
+                            newrule.replace_subclusters(&rule, &dis);
+                            if let Some(clusterdistance_min) = opt_clusterdistance_min {
+                                if clusterdistance_min.distance > 0f32 {
+                                    if clusterdistance_min.distance == 1f32 {
+                                        // new cluster
+                                        Logging::novelty(&format!("[{}] New Cluster: {}", &precord.appname, clusterdistance_min.dir2.display()));
+                                    } else {
+                                        // 0 < 1 : expanding cluster
+                                        Logging::novelty(&format!("[{}] Expanding Cluster: {} => {}", &precord.appname, clusterdistance_min.dir1.display(), clusterdistance_min.dir2.display()));
+                                    }
+                                }
+                            }
+
+                            if now > (rule.update_time.unwrap_or_else(|| Local::now()) + chrono::Duration::minutes(20)) {
+                                //update the rule file
+                                newrule.update_time = Some(now);
+                                Rule::serialize_yml_file(PathBuf::from(novelty_path).join(app_file.to_string() + ".yml"), newrule.clone());
+                                let savestate = StateSave::new(precord);
+                                let pathsave = PathBuf::from(novelty_path).join(app_file.to_string() + "_save.json");
+                                savestate.save_file(&pathsave).unwrap();
+                            }
+                            self.rules.put(app_file.to_string(), newrule);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    impl<'a> ProcessRecordHandlerNovelty<'a> {
+        pub fn new(
+            config: &'a Config,
+            watchlist: WatchList,
+        ) -> ProcessRecordHandlerNovelty<'a> {
+            ProcessRecordHandlerNovelty {
+                config,
+                watchlist,
+                rules: LruCache::new(std::num::NonZeroUsize::new(1024).unwrap()),
+            }
+        }
+    }
+=======
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 }
 
 mod process_records {

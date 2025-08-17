@@ -4,9 +4,13 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use std::sync::mpsc::channel;
 use std::io::{Read, Seek, SeekFrom};
-use crate::{CDriverMsgs, config, Connectors, Driver, ExepathLive, IOMessage, IOMsgPostProcessorMqtt, IOMsgPostProcessorRPC, IOMsgPostProcessorWriter, Logging, ProcessRecordHandlerLive, whitelist, Worker};
+use crate::{CDriverMsgs, config, Connectors, Driver, ExepathLive, IOMessage, IOMsgPostProcessorMqtt, IOMsgPostProcessorRPC, IOMsgPostProcessorWriter, Logging, ProcessRecordHandlerLive, whitelist, Worker, ProcessRecordHandlerNovelty};
 use crate::config::Param;
+<<<<<<< HEAD
+use crate::watchlist::WatchList;
+=======
 use crate::threathandling::WindowsThreatHandler;
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
 pub fn run() {
     Logging::init();
@@ -33,13 +37,13 @@ pub fn run() {
         println!("Replay Driver Messages");
         let config = config::Config::new();
         let whitelist = whitelist::WhiteList::from(
-            &Path::new(&config[config::Param::ConfigPath]).join(Path::new("exclusions.txt")),
+            &Path::new(&config[Param::ConfigPath]).join(Path::new("exclusions.txt")),
         )
             .unwrap();
         let mut worker = Worker::new_replay(&config, &whitelist);
 
         let filename =
-            &Path::new(&config[config::Param::ProcessActivityLogPath]).join(Path::new("drivermessages.txt"));
+            &Path::new(&config[Param::ProcessActivityLogPath]).join(Path::new("drivermessages.txt"));
         let mut file = File::open(Path::new(filename)).unwrap();
         let file_len = file.metadata().unwrap().len() as usize;
 
@@ -96,11 +100,17 @@ pub fn run() {
             //NEW
             thread::spawn(move || {
                 let whitelist = whitelist::WhiteList::from(
-                    &Path::new(&config[config::Param::ConfigPath])
+                    &Path::new(&config[Param::ConfigPath])
                         .join(Path::new("exclusions.txt")),
                 )
                     .expect("Cannot open exclusions.txt");
                 whitelist.refresh_periodically();
+
+                let watchlist = WatchList::from(
+                    &Path::new(&config[Param::NoveltyPath])
+                        .join(Path::new("to_analyze.yml")),
+                ).expect("Cannot open to_analyze.yml");
+                watchlist.refresh_periodically();
 
                 let mut worker = Worker::new();
 
@@ -111,6 +121,13 @@ pub fn run() {
                         .whitelist(&whitelist)
                         .process_record_handler(Box::new(ProcessRecordHandlerLive::new(
                             &config, Box::new(WindowsThreatHandler::from(driver)),
+                        )));
+                }
+
+                if cfg!(feature = "novelty") {
+                    worker = worker
+                        .process_record_handler(Box::new(ProcessRecordHandlerNovelty::new(
+                            &config, watchlist,
                         )));
                 }
 
