@@ -75,16 +75,13 @@ mod utils;
 mod watchlist;
 mod whitelist;
 mod worker;
-<<<<<<< HEAD
 mod novelty;
-=======
 #[cfg(target_os = "windows")]
 #[path = "windows/threathandling.rs"]
 mod threathandling;
 #[cfg(target_os = "linux")]
 #[path = "linux/threathandling.rs"]
 mod threathandling;
->>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
 #[cfg(feature = "service")]
 const SERVICE_NAME: &str = "Owlyshield Service";

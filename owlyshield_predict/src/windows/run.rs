@@ -6,11 +6,8 @@ use std::sync::mpsc::channel;
 use std::io::{Read, Seek, SeekFrom};
 use crate::{CDriverMsgs, config, Connectors, Driver, ExepathLive, IOMessage, IOMsgPostProcessorMqtt, IOMsgPostProcessorRPC, IOMsgPostProcessorWriter, Logging, ProcessRecordHandlerLive, whitelist, Worker, ProcessRecordHandlerNovelty};
 use crate::config::Param;
-<<<<<<< HEAD
 use crate::watchlist::WatchList;
-=======
 use crate::threathandling::WindowsThreatHandler;
->>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
 pub fn run() {
     Logging::init();

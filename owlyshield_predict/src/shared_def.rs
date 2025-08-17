@@ -50,6 +50,7 @@ pub enum DriverComMessageType {
 }
 
 /// See [`shared_def::IOMessage`] struct and [this doc](https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/irp-major-function-codes).
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum IrpMajorOp {
     /// Nothing happened
     IrpNone,

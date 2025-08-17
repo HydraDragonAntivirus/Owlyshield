@@ -8,7 +8,6 @@ license-file = "LICENSE.txt"
 moonfire-tflite = { path = "moonfire-tflite" }
 slc-paths = { path = "slc-paths" }
 win-pe-inspection = { path = "win-pe-inspection" }
-<<<<<<< HEAD
 wchar = "0.11.0"
 registry = "1.2.0"
 strum = "0.24.1"
@@ -28,30 +27,8 @@ curl = "0.4.43"
 jsonrpc-http-server = "18.0.0"
 configparser = "3.0.2"
 rumqtt = "0.31.0"
-lru = "0.9.0"
-sysinfo = "0.27.7"
-=======
-wchar = "0.11"
-registry = "1.2"
-strum = "0.24"
-strum_macros = "0.24"
-byteorder = "1.4"
-chrono = "0.4"
-num = "0.4"
-num-derive = "0.3"
-num-traits = "0.2"
-serde_json = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-log = "0.4"
-rmp-serde = "1.1"
-hostname = "0.3"
-curl = "0.4"
-jsonrpc-http-server = "18.0"
-configparser = "3.0"
-rumqtt = "0.31"
 lru = "^0.11"
 sysinfo = "0.28"
->>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
 #Windows
 [target.'cfg(target_os = "windows")'.dependencies]

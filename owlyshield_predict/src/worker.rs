@@ -204,6 +204,9 @@ pub mod process_record_handling {
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
     };
+    #[cfg(target_os = "windows")]
+
+    use windows::Win32::System::Diagnostics::Debug::DebugActiveProcess;
     #[cfg(target_os = "linux")]
     use std::path::Path;
     use chrono::Local;
@@ -216,12 +219,10 @@ pub mod process_record_handling {
     use crate::process::{ProcessRecord, ProcessState};
     use crate::worker::predictor::{PredictorHandler, PredictorMalware};
     use crate::IOMessage;
-<<<<<<< HEAD
     use crate::watchlist::WatchList;
     use crate::novelty::{Rule, StateSave};
-=======
     use crate::worker::threat_handling::ThreatHandler;
->>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
+    use crate::Logging;
 
     pub trait Exepath {
         fn exepath(&self, iomsg: &IOMessage) -> Option<PathBuf>;
@@ -417,7 +418,6 @@ pub mod process_record_handling {
             }
         }
     }
-<<<<<<< HEAD
 
     #[cfg(target_os = "windows")]
     fn try_suspend(proc: &mut ProcessRecord) {
@@ -520,8 +520,6 @@ pub mod process_record_handling {
             }
         }
     }
-=======
->>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 }
 
 mod process_records {

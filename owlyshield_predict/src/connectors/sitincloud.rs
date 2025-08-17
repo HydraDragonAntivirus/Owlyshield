@@ -11,7 +11,6 @@ use serde::Serialize;
 use crate::config::{Config, ConfigReader, Param};
 use crate::connectors::connector::{Connector, ConnectorError};
 use crate::process::ProcessRecord;
-use crate::logging::Logging;
 
 #[cfg(target_os = "windows")]
 const CONF_LOCATION: &str = r"SOFTWARE\Owlyshield\SitinCloud";
