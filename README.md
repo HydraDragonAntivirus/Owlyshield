@@ -72,7 +72,7 @@ Owlyshield provides a powerful solution for detecting and responding to threats 
 
 ## :arrow_forward: 2 minutes install
 
-Installation instructions for Owlyshield can be found in the Releases section of the project's GitHub repository. For usage instructions, please refer to the project's Wiki or see the Contributing section if you prefer to build Owlyshield yourself.
+Installation instructions for Owlyshield can be found in the Releases section of the project's GitHub repository. For usage instructions, please refer to the project's Wiki or see the Contributing section if you prefer to build Owlyshield yourself. Don't forget to build with "cargo build --release --features service,novelty" for novelty functionality.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 

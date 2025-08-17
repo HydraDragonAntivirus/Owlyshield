@@ -141,11 +141,14 @@ pub async fn run() -> Result<(), anyhow::Error> {
                     .expect("Cannot open exclusions.txt");
                 whitelist.refresh_periodically();
 
-                let watchlist = WatchList::from(
-                    &Path::new(&config[Param::NoveltyPath])
-                        .join(Path::new("to_analyze.yml")),
-                ).expect("Cannot open to_analyze.yml");
-                watchlist.refresh_periodically();
+                if cfg!(feature = "novelty") {
+                    let watchlist = WatchList::from(
+                        &Path::new(&config[Param::NoveltyPath])
+                            .join(Path::new("to_analyze.yml")),
+                    )
+                    .expect("Cannot open to_analyze.yml");
+                    watchlist.refresh_periodically();
+                }
 
                 let mut worker = Worker::new();
 
