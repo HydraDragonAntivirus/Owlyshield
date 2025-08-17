@@ -11,7 +11,6 @@ use crate::extensions::ExtensionList;
 #[derive(Debug, EnumIter, PartialEq, Eq, Hash, Clone)]
 pub enum Param {
     ProcessActivityLogPath,
-    LogPath,
     ConfigPath,
     NumVersion,
     UtilsPath,
@@ -38,7 +37,6 @@ impl Param {
             Param::ConfigPath => "CONFIG_PATH", // incidents reports, exclusions list
             Param::NumVersion => "NUM_VERSION",
             Param::ProcessActivityLogPath => "PROCESS_ACTIVITY_PATH", // dir with prediction.csv (used for debug)
-            Param::LogPath => "LOG_PATH", // dir with log files
             Param::UtilsPath => "UTILS_PATH", // toast.exe
             Param::AppId => "APP_ID",         // AppUserModelID for toast notifications
             Param::KillPolicy => "KILL_POLICY", // SUSPEND / KILL
@@ -56,7 +54,6 @@ impl Param {
             Param::ConfigPath => "config_path", // incidents reports, exclusions list
             Param::NumVersion => "num_version",
             Param::ProcessActivityLogPath => "process_activity_path", // dir with prediction.csv (used for debug)
-            Param::LogPath => "log_path", // dir with log files
             Param::UtilsPath => "utils_path", // toast.exe
             Param::AppId => "app_id",         // AppUserModelID for toast notifications
             Param::KillPolicy => "kill_policy", // SUSPEND / KILL
@@ -72,7 +69,6 @@ impl Param {
         let mut params = vec![
             Param::KillPolicy,
             Param::ConfigPath,
-            Param::LogPath,
             Param::Telemetry,
             Param::NumVersion,
             Param::ProcessActivityLogPath,
@@ -107,7 +103,6 @@ impl Param {
             "CONFIG_PATH" => Param::ConfigPath, // incidents reports, exclusions list
             "NUM_VERSION" => Param::NumVersion,
             "PROCESS_ACTIVITY_PATH" => Param::ProcessActivityLogPath, // dir with prediction.csv (used for debug)
-            "LOG_PATH" => Param::LogPath, // dir with log files
             "UTILS_PATH" => Param::UtilsPath, // toast.exe
             "APP_ID" => Param::AppId,         // AppUserModelID for toast notifications
             "KILL_POLICY" => Param::KillPolicy, // SUSPEND / KILL
@@ -125,7 +120,6 @@ impl Param {
             "config_path" => Param::ConfigPath, // incidents reports, exclusions list
             "num_version" => Param::NumVersion,
             "process_activity_path" => Param::ProcessActivityLogPath, // dir with prediction.csv (used for debug)
-            "log_path" => Param::LogPath, // dir with log files
             "utils_path" => Param::UtilsPath, // toast.exe
             "app_id" => Param::AppId,         // AppUserModelID for toast notifications
             "kill_policy" => Param::KillPolicy, // SUSPEND / KILL

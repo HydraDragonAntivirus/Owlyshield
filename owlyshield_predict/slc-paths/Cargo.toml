@@ -6,9 +6,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+<<<<<<< HEAD
 kodama = { git = "https://github.com/SubconsciousCompute/kodama" } # uses a nightly feature
 serde = { version = "1.0.140", features = ["derive"] }
 serde_json = "1.0.82"
+=======
+#kodama = { git = "https://github.com/SubconsciousCompute/kodama" } # uses a nightly feature
+kodama = "0.2.0"
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
 [dev-dependencies]
 criterion = "0.4.0"

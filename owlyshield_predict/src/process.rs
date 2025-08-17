@@ -526,7 +526,7 @@ impl ProcessRecord {
 pub enum ProcessState {
     Running,
     Suspended,
-    _Killed,
+    Killed,
 }
 
 impl fmt::Display for ProcessState {
@@ -534,7 +534,7 @@ impl fmt::Display for ProcessState {
         match &self {
             ProcessState::Running => write!(f, "RUNNING"),
             ProcessState::Suspended => write!(f, "SUSPENDED"),
-            ProcessState::_Killed => write!(f, "KILLED"),
+            ProcessState::Killed => write!(f, "KILLED"),
         }
     }
 }

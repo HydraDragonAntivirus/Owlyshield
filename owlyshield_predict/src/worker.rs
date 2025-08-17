@@ -193,16 +193,13 @@ mod predictor {
 
 pub mod process_record_handling {
     use std::path::PathBuf;
-    use std::sync::mpsc::Sender;
     use std::thread;
     use std::time::Duration;
 
     #[cfg(target_os = "windows")]
     use windows::Win32::Foundation::{CloseHandle, GetLastError};
     #[cfg(target_os = "windows")]
-    use windows::Win32::System::Diagnostics::Debug::DebugActiveProcess;
-    #[cfg(target_os = "windows")]
-    use windows::Win32::System::ProcessStatus::K32GetProcessImageFileNameA;
+    use windows::Win32::System::ProcessStatus::GetProcessImageFileNameA;
     #[cfg(target_os = "windows")]
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
@@ -218,10 +215,13 @@ pub mod process_record_handling {
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::process::{ProcessRecord, ProcessState};
     use crate::worker::predictor::{PredictorHandler, PredictorMalware};
-    use crate::logging::Logging;
     use crate::IOMessage;
+<<<<<<< HEAD
     use crate::watchlist::WatchList;
     use crate::novelty::{Rule, StateSave};
+=======
+    use crate::worker::threat_handling::ThreatHandler;
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 
     pub trait Exepath {
         fn exepath(&self, iomsg: &IOMessage) -> Option<PathBuf>;
@@ -240,7 +240,7 @@ pub mod process_record_handling {
                     if !(handle.is_invalid() || handle.0 == 0) {
                         let mut buffer: Vec<u8> = Vec::new();
                         buffer.resize(1024, 0);
-                        let res = K32GetProcessImageFileNameA(handle, buffer.as_mut_slice());
+                        let res = GetProcessImageFileNameA(handle, buffer.as_mut_slice());
 
                         CloseHandle(handle);
                         if res == 0 {
@@ -259,11 +259,7 @@ pub mod process_record_handling {
 
         #[cfg(target_os = "linux")]
         fn exepath(&self, iomsg: &IOMessage) -> Option<PathBuf> {
-            let path = Path::new("/proc").join(iomsg.pid.to_string()).join("exe");
-            match std::fs::read_link(&path) {
-                Ok(exepath) => Some(exepath),
-                Err(_) => None,
-            }
+            Some(iomsg.runtime_features.exepath.clone())
         }
     }
 
@@ -281,7 +277,7 @@ pub mod process_record_handling {
 
     pub struct ProcessRecordHandlerLive<'a> {
         config: &'a Config,
-        tx_kill: Sender<u64>,
+        threat_handler: Box<dyn ThreatHandler>,
         predictor_malware: PredictorMalware<'a>,
     }
 
@@ -308,18 +304,12 @@ pub mod process_record_handling {
                     match self.config.get_kill_policy() {
                         KillPolicy::Suspend => {
                             if precord.process_state != ProcessState::Suspended {
-                                try_suspend(precord);
+                                self.threat_handler.suspend(precord);
                             }
                         }
                         KillPolicy::Kill => {
-                            match self.tx_kill.send(precord.gid) {
-                                Ok(()) => (),
-                                Err(e) => {
-                                    // error!("Cannot send iomsg: {}", e);
-                                    println!("Cannot send iomsg: {e}");
-                                    Logging::error(format!("Cannot send iomsg: {e}").as_str());
-                                }
-                            }
+                            self.threat_handler.kill(precord.gid);
+                            precord.process_state = ProcessState::Killed;
                         }
                         KillPolicy::DoNothing => {}
                     }
@@ -384,11 +374,11 @@ pub mod process_record_handling {
     impl<'a> ProcessRecordHandlerLive<'a> {
         pub fn new(
             config: &'a Config,
-            tx_kill: Sender<u64>,
+            threat_handler: Box<dyn ThreatHandler>
         ) -> ProcessRecordHandlerLive<'a> {
             ProcessRecordHandlerLive {
                 config,
-                tx_kill,
+                threat_handler,
                 predictor_malware: PredictorMalware::new(config),
             }
         }
@@ -427,6 +417,7 @@ pub mod process_record_handling {
             }
         }
     }
+<<<<<<< HEAD
 
     #[cfg(target_os = "windows")]
     fn try_suspend(proc: &mut ProcessRecord) {
@@ -529,13 +520,20 @@ pub mod process_record_handling {
             }
         }
     }
+=======
+>>>>>>> 611eb295336686ce16d056e2f0c12193efefb68a
 }
 
 mod process_records {
+    use std::fs;
     use std::num::NonZeroUsize;
+    use std::path::Path;
+    use std::time::{Duration, SystemTime};
     use lru::LruCache;
+    use crate::config::{Config, Param};
 
-    use crate::process::ProcessRecord;
+    use crate::process::{ProcessRecord, ProcessState};
+    use crate::worker::threat_handling::ThreatHandler;
 
     pub struct ProcessRecords {
         pub process_records: LruCache<u64, ProcessRecord>,
@@ -559,6 +557,65 @@ mod process_records {
         pub fn insert_precord(&mut self, gid: u64, precord: ProcessRecord) {
             self.process_records.push(gid, precord);
         }
+
+        pub fn process_suspended_procs(&mut self, config: &Config, threat_handler: Box<dyn ThreatHandler>) {
+            let now = SystemTime::now();
+            for (gid, proc) in self.process_records.iter_mut() {
+                if proc.process_state == ProcessState::Suspended {
+                    if now.duration_since(proc.time_suspended.unwrap_or(now)).unwrap_or(Duration::from_secs(0)) > Duration::from_secs(120) {
+                        threat_handler.awake(proc, true);
+                        threat_handler.kill(*gid);
+                    }
+                }
+            }
+
+            let command_files_path = Path::new(&config[Param::ConfigPath]).join("tmp");
+            if command_files_path.exists() {
+                for command_file_dir_entry in fs::read_dir(command_files_path).unwrap() {
+                    let pbuf_command_file = command_file_dir_entry.unwrap().path();
+                    if pbuf_command_file.is_file() {
+                        if let Some(ostr_fname) = pbuf_command_file.file_name() {
+                            if let Some(fname) = ostr_fname.to_str() {
+                                if let Some( (command, str_gid) ) = fname.split_once("_") {
+                                    if let Ok(gid) = str_gid.parse::<u64>() {
+                                        if let Some(proc) = self.process_records.get_mut(&gid) {
+                                            match command {
+                                                "A" => {
+                                                    // println!("awake !");
+                                                    threat_handler.awake(proc, false);
+                                                }
+                                                "K" => {
+                                                    // println!("FILE K DETECTED");
+                                                    threat_handler.awake(proc, true);
+                                                    threat_handler.kill(gid);
+                                                }
+                                                &_ => {}
+                                            }
+                                            if !fs::remove_file(pbuf_command_file.as_path()).is_ok() {
+                                                println!("cannot remove");
+                                                eprintln!("pbuf_command_file = {:?}", pbuf_command_file);
+                                                // try_kill(driver, proc);
+                                                // ActionsOnKill::new().run_actions(&config, &proc, &proc.prediction_matrix.clone(), proc.predictions.get_last_prediction().unwrap_or(0.0));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub mod threat_handling {
+    use crate::process::ProcessRecord;
+
+    pub trait ThreatHandler {
+        fn suspend(&self, proc: &mut ProcessRecord);
+        fn kill(&self, gid: u64);
+        fn awake(&self, proc: &mut ProcessRecord, kill_proc_on_exit: bool);
     }
 }
 
@@ -582,6 +639,7 @@ pub mod worker_instance {
     use crate::IOMessage;
     use crate::jsonrpc::{Jsonrpc, RPCMessage};
     use crate::predictions::prediction::input_tensors::Timestep;
+    use crate::worker::threat_handling::ThreatHandler;
 
     pub trait IOMsgPostProcessor {
         fn postprocess(&mut self, iomsg: &mut IOMessage, precord: &ProcessRecord);
@@ -757,12 +815,16 @@ pub mod worker_instance {
             }
         }
 
+        pub fn process_suspended_records(&mut self, config: &Config, threat_handler: Box<dyn ThreatHandler>) {
+            self.process_records.process_suspended_procs(config, threat_handler);
+        }
+
         fn register_precord(&mut self, iomsg: &mut IOMessage) {
             match self.process_records.get_precord_by_gid(iomsg.gid) {
                 None => {
                     if let Some(exepath) = &self.exepath_handler.exepath(iomsg) {
                         let appname = self
-                            .appname_from_exepath(exepath)
+                            .appname_from_exepath(&exepath)
                             .unwrap_or_else(|| String::from("DEFAULT"));
                         if !self.is_app_whitelisted(&appname)
                             && !exepath
@@ -789,9 +851,10 @@ pub mod worker_instance {
         }
 
         fn appname_from_exepath(&self, exepath: &Path) -> Option<String> {
-            exepath
+            /*exepath
                 .file_name()
-                .map(|filename| filename.to_string_lossy().to_string())
+                .map(|filename| filename.to_string_lossy().to_string())*/
+            exepath.to_str().map(|s| s.to_string())
         }
     }
 }
