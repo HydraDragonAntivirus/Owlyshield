@@ -58,10 +58,8 @@ impl AVIntegration {
             .join(username)
             .join("DefaultBox");
         
-        let target_path = Path::new(&iomsg.filepathstr);
-
-        // Only log events that are inside the sandbox path
-        if target_path.starts_with(&sandbox_path) {
+        // Check if the process's executable path starts with the sandbox path
+        if process_record.exepath.starts_with(&sandbox_path) {
             let event = self.create_file_event(iomsg, process_record, event_type);
             self.pending_events.push(event);
         }
