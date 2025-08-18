@@ -50,7 +50,7 @@ Although Owlyshield is a framework designed to be customized and extended, it al
 
 - [x] Advanced novelty detection with autoencoders (commercial version),
 - [x] Ransomware protection in real-time on Windows using XGBoost,
-- [ ] Novelty detection with embedded training on both Linux (+IoT) and Windows,
+- [x] Novelty detection with embedded training on both Linux (+IoT) and Windows,
 - [ ] Auto-configuration of SELinux to automatically protect exposed applications.
 
 
