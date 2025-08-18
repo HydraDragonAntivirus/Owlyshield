@@ -770,7 +770,8 @@ pub mod worker_instance {
 				    let path = env::var("ProgramFiles")
 					    .map(|pf| Path::new(&pf)
 					    .join("HydraDragonAntivirus")
-					    .join("av_events.json"))
+					    .join("hydradragon")
+                        .join("av_events.json"))
 					    .ok();
 				    path.map(|p| AVIntegration::new(p, 100))
 				} else {
