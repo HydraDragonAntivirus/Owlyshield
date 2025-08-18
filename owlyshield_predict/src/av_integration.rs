@@ -50,16 +50,13 @@ impl AVIntegration {
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, process_record: &ProcessRecord) {
         let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
 
-        // Define the sandbox path
-        let system_drive = env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+        // Create a unique substring to identify a sandboxed process path.
+        // This avoids issues with "Device Path" vs "Drive Letter Path" formats.
         let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-        let sandbox_path = Path::new(&system_drive)
-            .join("Sandbox")
-            .join(username)
-            .join("DefaultBox");
+        let sandbox_identifier = format!("\\Sandbox\\{}\\DefaultBox\\", username);
         
-        // Check if the process's executable path starts with the sandbox path
-        if process_record.exepath.starts_with(&sandbox_path) {
+        // Check if the process's executable path string contains the sandbox identifier.
+        if process_record.exepath.to_string_lossy().contains(&sandbox_identifier) {
             let event = self.create_file_event(iomsg, process_record, event_type);
             self.pending_events.push(event);
         }
