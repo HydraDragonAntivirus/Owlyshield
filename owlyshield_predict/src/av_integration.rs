@@ -50,13 +50,12 @@ impl AVIntegration {
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, process_record: &ProcessRecord) {
         let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
 
-        // Create a unique substring to identify a sandboxed process path.
-        // This avoids issues with "Device Path" vs "Drive Letter Path" formats.
-        let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-        let sandbox_identifier = format!("\\Sandbox\\{}\\DefaultBox\\", username);
-        
-        // Check if the process's executable path string contains the sandbox identifier.
-        if process_record.exepath.to_string_lossy().contains(&sandbox_identifier) {
+        // A more robust check that doesn't rely on the USERNAME env var, which can be
+        // incorrect when running as a service (e.g., as SYSTEM user).
+        // It checks if the path contains the key sandbox folders, ignoring the username.
+        let path_str = process_record.exepath.to_string_lossy();
+
+        if path_str.contains("\\Sandbox\\") && path_str.contains("\\DefaultBox\\") {
             let event = self.create_file_event(iomsg, process_record, event_type);
             self.pending_events.push(event);
         }
