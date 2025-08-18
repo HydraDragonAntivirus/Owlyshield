@@ -50,29 +50,21 @@ impl AVIntegration {
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, process_record: &ProcessRecord) {
         let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
 
-        let is_write_op = matches!(event_type, IrpMajorOp::IrpWrite | IrpMajorOp::IrpSetInfo | IrpMajorOp::IrpCreate);
+        // Define the sandbox path
+        let system_drive = env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+        let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+        let sandbox_path = Path::new(&system_drive)
+            .join("Sandbox")
+            .join(username)
+            .join("DefaultBox");
+        
+        let target_path = Path::new(&iomsg.filepathstr);
 
-        if is_write_op {
-            let system_drive = env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-            let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-            let sandbox_path = Path::new(&system_drive)
-                .join("Sandbox")
-                .join(username)
-                .join("DefaultBox");
-            
-            let target_path = Path::new(&iomsg.filepathstr);
-
-            // Only log write events that are inside the sandbox
-            if target_path.starts_with(&sandbox_path) {
-                let event = self.create_file_event(iomsg, process_record, event_type);
-                self.pending_events.push(event);
-            }
-        } else {
-            // Log non-write events regardless of path
+        // Only log events that are inside the sandbox path
+        if target_path.starts_with(&sandbox_path) {
             let event = self.create_file_event(iomsg, process_record, event_type);
             self.pending_events.push(event);
         }
-
 
         if self.pending_events.len() >= self.batch_size {
             self.flush_events();
