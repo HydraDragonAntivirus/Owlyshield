@@ -638,11 +638,13 @@ pub mod worker_instance {
     use crate::jsonrpc::{Jsonrpc, RPCMessage};
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::worker::threat_handling::ThreatHandler;
-    #[cfg(target_os = "windows")]
+    
+    // Conditionally import AVIntegration and HYDRA_DRAGON_ENABLED
+    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
     use std::env;
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
     use crate::av_integration::AVIntegration;
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
     use crate::HYDRA_DRAGON_ENABLED;
 
     pub trait IOMsgPostProcessor {
@@ -753,7 +755,8 @@ pub mod worker_instance {
         process_record_handler: Option<Box<dyn ProcessRecordIOHandler + 'a>>,
         exepath_handler: Box<dyn Exepath>,
         iomsg_postprocessors: Vec<Box<dyn IOMsgPostProcessor>>,
-        #[cfg(target_os = "windows")]
+        // Conditionally compile the av_integration field
+        #[cfg(all(target_os = "windows", feature = "hydradragon"))]
         av_integration: Option<AVIntegration>, 
     }
 
@@ -765,7 +768,8 @@ pub mod worker_instance {
 				process_record_handler: None,
 				exepath_handler: Box::<ExepathLive>::default(),
 				iomsg_postprocessors: vec![],
-			    #[cfg(target_os = "windows")]
+                // Conditionally initialize the av_integration field
+			    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
 			    av_integration: if *HYDRA_DRAGON_ENABLED {
 				    let path = env::var("ProgramFiles")
 					    .map(|pf| Path::new(&pf)
@@ -817,7 +821,7 @@ pub mod worker_instance {
 				process_record_handler: Some(Box::new(ProcessRecordHandlerReplay::new(config))),
 				exepath_handler: Box::<ExePathReplay>::default(),
 				iomsg_postprocessors: vec![],
-                #[cfg(target_os = "windows")]
+                #[cfg(all(target_os = "windows", feature = "hydradragon"))]
                 av_integration: None,
 			}
 		}
@@ -825,11 +829,18 @@ pub mod worker_instance {
         pub fn process_io(&mut self, iomsg: &mut IOMessage) {
             self.register_precord(iomsg);
             if let Some(precord) = self.process_records.get_precord_mut_by_gid(iomsg.gid) {
-                #[cfg(target_os = "windows")]
+                
+                // The signature for `add_irp_record` needs to accept an Option.
+                // We get the mutable reference to av_integration if the feature is enabled,
+                // otherwise we pass None.
+                #[cfg(all(target_os = "windows", feature = "hydradragon"))]
                 let av_integration = self.av_integration.as_mut();
-                #[cfg(not(target_os = "windows"))]
+                
+                #[cfg(not(all(target_os = "windows", feature = "hydradragon")))]
                 let av_integration = None;
 
+                // This assumes `add_irp_record` in `process.rs` is defined as:
+                // pub fn add_irp_record(&mut self, iomsg: &IOMessage, av_integration: Option<&mut AVIntegration>)
                 precord.add_irp_record(iomsg, av_integration);
 
                 if let Some(process_record_handler) = &mut self.process_record_handler {

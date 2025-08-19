@@ -36,18 +36,22 @@ use crate::connectors::register::Connectors;
 use crate::driver_com::Driver;
 #[cfg(target_os = "windows")]
 use std::{env, path::Path, sync::LazyLock};
-#[cfg(target_os = "windows")]
+
+// Conditionally compile AVIntegration `use` statement
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
 use crate::av_integration::AVIntegration;
 
 
-#[cfg(target_os = "windows")]
+// Conditionally compile the HYDRA_DRAGON_ENABLED static variable
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
 pub static HYDRA_DRAGON_ENABLED: LazyLock<bool> = LazyLock::new(|| {
     env::var("ProgramFiles")
         .map(|pf| Path::new(&pf).join("HydraDragonAntivirus").exists())
         .unwrap_or(false)
 });
 
-#[cfg(target_os = "windows")]
+// Conditionally compile the HYDRA_DRAGON_INTEGRATION static variable
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
 pub static HYDRA_DRAGON_INTEGRATION: LazyLock<Option<AVIntegration>> = LazyLock::new(|| {
     if *HYDRA_DRAGON_ENABLED {
         let path = env::var("ProgramFiles")
@@ -71,7 +75,8 @@ use crate::worker::process_record_handling::{ExepathLive, ProcessRecordHandlerLi
 use crate::worker::worker_instance::{IOMsgPostProcessorMqtt, IOMsgPostProcessorRPC, IOMsgPostProcessorWriter, Worker};
 
 mod actions_on_kill;
-#[cfg(target_os = "windows")]
+// Conditionally compile the av_integration module
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
 mod av_integration;
 mod config;
 mod connectors;

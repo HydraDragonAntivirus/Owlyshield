@@ -56,14 +56,25 @@ impl AVIntegration {
             .join(username)
             .join("DefaultBox");
         
-        let target_path = Path::new(&iomsg.filepathstr);
+        // 2. Normalize the incoming file path from the driver.
+        // File paths from kernel drivers often have the `\\?\` prefix for long path support.
+        // We need to remove it to ensure a consistent comparison with the standard path.
+        let cleaned_filepath = iomsg.filepathstr.strip_prefix(r"\\?\").unwrap_or(&iomsg.filepathstr);
+        let target_path = Path::new(cleaned_filepath);
 
-        // 2. Apply the filter to ALL events. If the event is outside the sandbox, ignore it completely.
+        // -- For Debugging --
+        // If the filter still doesn't work, uncomment the following lines to print
+        // the exact paths being compared for every event.
+        // println!("[DEBUG] Target Path: {:?}", target_path);
+        // println!("[DEBUG] Sandbox Path: {:?}", sandbox_path);
+
+        // 3. Apply the filter using the normalized path.
         if !target_path.starts_with(&sandbox_path) {
+            // println!("[DEBUG] Skipping path outside sandbox.");
             return; // Exit the function early if the path is not in the sandbox.
         }
 
-        // 3. If the code reaches here, the event is inside the sandbox and should be logged.
+        // 4. If the code reaches here, the event is inside the sandbox and should be logged.
         let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
         let event = self.create_file_event(iomsg, process_record, event_type);
         self.pending_events.push(event);
