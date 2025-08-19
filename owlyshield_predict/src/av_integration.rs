@@ -49,26 +49,39 @@ impl AVIntegration {
 
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, process_record: &ProcessRecord) {
         let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
+        // Create the event object first, before any filtering logic.
+        let event = self.create_file_event(iomsg, process_record, event_type);
 
         let is_write_op = matches!(event_type, IrpMajorOp::IrpWrite | IrpMajorOp::IrpSetInfo | IrpMajorOp::IrpCreate);
 
+        // For write operations, check if the event's content is related to the sandbox.
         if is_write_op {
             let system_drive = env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
             let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+            
+            // Construct the sandbox path to check against.
             let sandbox_path = Path::new(&system_drive)
                 .join("Sandbox")
                 .join(username)
                 .join("DefaultBox");
             
-            let target_path = Path::new(&iomsg.filepathstr);
+            // Perform a case-insensitive search for the sandbox path string.
+            let sandbox_path_str = sandbox_path.to_string_lossy().to_lowercase();
 
-            // Only log write events that are inside the sandbox
-            if target_path.starts_with(&sandbox_path) {
-                let event = self.create_file_event(iomsg, process_record, event_type);
+            // Check multiple fields in the created event to see if they contain the sandbox path.
+            let is_sandbox_related = event.file_path.to_lowercase().starts_with(&sandbox_path_str) ||
+                                     event.metadata.directories_affected.iter().any(|dir| dir.to_lowercase().starts_with(&sandbox_path_str));
+
+            // Only queue the event if it's related to the sandbox.
+            if is_sandbox_related {
                 self.pending_events.push(event);
             }
+        } else {
+            // For non-write events, queue them unconditionally.
+            self.pending_events.push(event);
         }
 
+        // Flush the event batch if the size limit is reached.
         if self.pending_events.len() >= self.batch_size {
             self.flush_events();
         }
