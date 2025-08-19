@@ -204,9 +204,6 @@ pub mod process_record_handling {
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
     };
-    #[cfg(target_os = "windows")]
-
-    use windows::Win32::System::Diagnostics::Debug::DebugActiveProcess;
     #[cfg(target_os = "linux")]
     use std::path::Path;
     use chrono::Local;
@@ -419,15 +416,15 @@ pub mod process_record_handling {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    fn try_suspend(proc: &mut ProcessRecord) {
-        proc.process_state = ProcessState::Suspended;
-        for pid in &proc.pids {
-            unsafe {
-                DebugActiveProcess(*pid);
-            }
-        }
-    }
+    //#[cfg(target_os = "windows")]
+    //fn try_suspend(proc: &mut ProcessRecord) {
+    //    proc.process_state = ProcessState::Suspended;
+    //    for pid in &proc.pids {
+    //        unsafe {
+    //            DebugActiveProcess(*pid);
+    //        }
+    //    }
+    //}
 
     pub struct ProcessRecordHandlerNovelty<'a> {
         config: &'a Config,

@@ -34,7 +34,7 @@ use windows_service::{define_windows_service, service_control_handler, service_d
 use crate::connectors::register::Connectors;
 #[cfg(target_os = "windows")]
 use crate::driver_com::Driver;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
 use std::{env, path::Path, sync::LazyLock};
 
 // Conditionally compile AVIntegration `use` statement
