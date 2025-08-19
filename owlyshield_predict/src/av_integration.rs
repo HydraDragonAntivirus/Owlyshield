@@ -57,25 +57,20 @@ impl AVIntegration {
 
         // For write operations, check if the event's content is related to the sandbox.
         if is_write_op {
-            let system_drive = env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-            let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+            let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string()).to_lowercase();
             
-            // Construct the sandbox path to check against.
-            let sandbox_path = Path::new(&system_drive)
-                .join("Sandbox")
-                .join(username)
-                .join("DefaultBox");
-            
-            // Perform a case-insensitive search for the sandbox path string.
-            let sandbox_path_str = sandbox_path.to_string_lossy().to_lowercase();
-
-            // Check multiple fields in the created event to see if they contain the sandbox path.
-            let is_sandbox_related = event.file_path.to_lowercase().starts_with(&sandbox_path_str) ||
-                                     event.metadata.directories_affected.iter().any(|dir| dir.to_lowercase().starts_with(&sandbox_path_str));
+            // Loosen the check to be more robust against different path formats (e.g., NT paths vs. Win32 paths from a driver).
+            // We check for the case-insensitive presence of "sandbox" and the username in the path.
+            let path_lower = event.file_path.to_lowercase();
+            let is_sandbox_related = path_lower.contains("sandbox") && path_lower.contains(&username);
 
             // Only queue the event if it's related to the sandbox.
             if is_sandbox_related {
                 self.pending_events.push(event);
+            } else {
+                // For debugging: print out write events that are being ignored.
+                // This can be removed in production.
+                eprintln!("[Debug] Ignoring non-sandbox write event: {}", event.file_path);
             }
         } else {
             // For non-write events, queue them unconditionally.
