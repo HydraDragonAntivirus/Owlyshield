@@ -67,12 +67,7 @@ impl AVIntegration {
                 let event = self.create_file_event(iomsg, process_record, event_type);
                 self.pending_events.push(event);
             }
-        } else {
-            // Log non-write events regardless of path
-            let event = self.create_file_event(iomsg, process_record, event_type);
-            self.pending_events.push(event);
         }
-
 
         if self.pending_events.len() >= self.batch_size {
             self.flush_events();
