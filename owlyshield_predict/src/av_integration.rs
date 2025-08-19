@@ -48,36 +48,31 @@ impl AVIntegration {
     }
 
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, process_record: &ProcessRecord) {
-        // 1. Define the sandbox path first.
-        let system_drive = env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-        let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-        let sandbox_path = Path::new(&system_drive)
-            .join("Sandbox")
-            .join(username)
-            .join("DefaultBox");
-        
-        // 2. Normalize the incoming file path from the driver.
-        // File paths from kernel drivers often have the `\\?\` prefix for long path support.
-        // We need to remove it to ensure a consistent comparison with the standard path.
-        let cleaned_filepath = iomsg.filepathstr.strip_prefix(r"\\?\").unwrap_or(&iomsg.filepathstr);
-        let target_path = Path::new(cleaned_filepath);
+        let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
 
-        // -- For Debugging --
-        // If the filter still doesn't work, uncomment the following lines to print
-        // the exact paths being compared for every event.
-        // println!("[DEBUG] Target Path: {:?}", target_path);
-        // println!("[DEBUG] Sandbox Path: {:?}", sandbox_path);
+        let is_write_op = matches!(event_type, IrpMajorOp::IrpWrite | IrpMajorOp::IrpSetInfo | IrpMajorOp::IrpCreate);
 
-        // 3. Apply the filter using the normalized path.
-        if !target_path.starts_with(&sandbox_path) {
-            // println!("[DEBUG] Skipping path outside sandbox.");
-            return; // Exit the function early if the path is not in the sandbox.
+        if is_write_op {
+            let system_drive = env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+            let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+            let sandbox_path = Path::new(&system_drive)
+                .join("Sandbox")
+                .join(username)
+                .join("DefaultBox");
+            
+            let target_path = Path::new(&iomsg.filepathstr);
+
+            // Only log write events that are inside the sandbox
+            if target_path.starts_with(&sandbox_path) {
+                let event = self.create_file_event(iomsg, process_record, event_type);
+                self.pending_events.push(event);
+            }
+        } else {
+            // Log non-write events regardless of path
+            let event = self.create_file_event(iomsg, process_record, event_type);
+            self.pending_events.push(event);
         }
 
-        // 4. If the code reaches here, the event is inside the sandbox and should be logged.
-        let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
-        let event = self.create_file_event(iomsg, process_record, event_type);
-        self.pending_events.push(event);
 
         if self.pending_events.len() >= self.batch_size {
             self.flush_events();
