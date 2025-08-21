@@ -55,21 +55,17 @@ impl AVIntegration {
         // Create the event object first, before any filtering logic.
         let event = self.create_file_event(iomsg, process_record, event_type);
 
-        // For write operations, check if the event's content is related to Sandboxie.
-        if is_write_op {
-            let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string()).to_lowercase();
-            
-            // Check for Sandboxie-related paths
-            let path_lower = event.file_path.to_lowercase();
-            let is_sandboxie_related = path_lower.contains("sandboxie") || 
-                                      (path_lower.contains("sandbox") && path_lower.contains(&username));
+        let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string()).to_lowercase();
+        
+        // Check for Sandboxie-related paths
+        let path_lower = event.file_path.to_lowercase();
+        let process_lower = event.process_name.to_lowercase();
+        let is_sandboxie_related = path_lower.contains("sandboxie") || 
+                                  (path_lower.contains("sandbox") && path_lower.contains(&username)) ||
+                                  process_lower.contains("sandboxie");
 
-            // Only queue the event if it's related to Sandboxie.
-            if is_sandboxie_related {
-                self.pending_events.push(event);
-            }
-        } else {
-            // For non-write events, queue them unconditionally.
+        // Only queue the event if it's related to Sandboxie
+        if is_sandboxie_related {
             self.pending_events.push(event);
         }
 
