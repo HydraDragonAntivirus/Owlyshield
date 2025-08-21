@@ -49,9 +49,6 @@ impl AVIntegration {
 
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, process_record: &ProcessRecord) {
         let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
-        // Check the event type before it's moved into create_file_event.
-        let is_write_op = matches!(event_type, IrpMajorOp::IrpWrite | IrpMajorOp::IrpSetInfo | IrpMajorOp::IrpCreate);
-        
         // Create the event object first, before any filtering logic.
         let event = self.create_file_event(iomsg, process_record, event_type);
 
