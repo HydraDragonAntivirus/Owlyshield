@@ -52,17 +52,12 @@ impl AVIntegration {
         // Create the event object first, before any filtering logic.
         let event = self.create_file_event(iomsg, process_record, event_type);
 
-        let username = env::var("USERNAME").unwrap_or_else(|_| "default".to_string()).to_lowercase();
-        
-        // Check for Sandboxie-related paths
-        let path_lower = event.file_path.to_lowercase();
-        let process_lower = event.process_name.to_lowercase();
-        let is_sandboxie_related = path_lower.contains("sandboxie") || 
-                                  (path_lower.contains("sandbox") && path_lower.contains(&username)) ||
-                                  process_lower.contains("sandboxie");
+        // Check for Sandbox-related paths that start with C: and contain Sandbox
+        let is_sandbox_related = event.file_path.starts_with("C:") && 
+                                 event.file_path.contains("Sandbox");
 
-        // Only queue the event if it's related to Sandboxie
-        if is_sandboxie_related {
+        // Only queue the event if it's related to Sandbox
+        if is_sandbox_related {
             self.pending_events.push(event);
         }
 
