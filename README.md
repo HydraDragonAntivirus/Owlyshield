@@ -73,6 +73,10 @@ Owlyshield provides a powerful solution for detecting and responding to threats 
 ## :arrow_forward: 2 minutes install
 
 Installation instructions for Owlyshield can be found in the Releases section of the project's GitHub repository. For usage instructions, please refer to the project's Wiki or see the Contributing section if you prefer to build Owlyshield yourself. Don't forget to build with "cargo build --release --features service,novelty,hydradragon" for novelty and hydradragon functionality.
+ 
+ ## TensorFlow Lite C/C++ source
+
+ Github repo link: https://github.com/ValYouW/tflite-dist
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 

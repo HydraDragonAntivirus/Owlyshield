@@ -3,7 +3,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{PathBuf};
 use chrono::{DateTime, Utc};
-use std::env;
 
 use crate::shared_def::{IOMessage, IrpMajorOp, DriveType};
 use crate::process::ProcessRecord;
