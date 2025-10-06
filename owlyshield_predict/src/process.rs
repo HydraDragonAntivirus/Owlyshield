@@ -49,9 +49,6 @@ use crate::shared_def::{
 
 use crate::extensions::ExtensionsCount;
 use crate::novelty::DirectoriesContent;
-#[cfg(all(target_os = "windows", feature = "hydradragon"))]
-use crate::av_integration::AVIntegration;
-
 
 /// GID state in real-time. This is a central structure.
 ///
@@ -268,18 +265,8 @@ impl ProcessRecord {
         }
     }
 
-    /// Public function to add an IRP record, compiled when hydradragon feature is enabled.
-    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-    pub fn add_irp_record(&mut self, iomsg: &IOMessage, av_integration: Option<&mut AVIntegration>) {
-        self.add_irp_record_common(iomsg);
-        if let Some(av) = av_integration {
-            av.queue_file_event(iomsg, self);
-        }
-    }
-
-    /// Public function to add an IRP record, compiled when hydradragon feature is NOT enabled.
-    #[cfg(not(all(target_os = "windows", feature = "hydradragon")))]
-    pub fn add_irp_record(&mut self, iomsg: &IOMessage, _av_integration: Option<&mut ()>) {
+    /// Public function to add an IRP record.
+    pub fn add_irp_record(&mut self, iomsg: &IOMessage) {
         self.add_irp_record_common(iomsg);
     }
 
@@ -747,14 +734,7 @@ mod tests {
         let mut pr = ProcessRecord::from(&iomsgs[0], "".to_string(), "".parse().unwrap());
 
         for iomsg in iomsgs {
-            #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-            {
-                use crate::av_integration::AVIntegration;
-                pr.add_irp_record(&iomsg, None::<&mut AVIntegration>);
-            }
-
-            #[cfg(not(all(target_os = "windows", feature = "hydradragon")))]
-            pr.add_irp_record(&iomsg, None::<&mut ()>);
+            pr.add_irp_record(&iomsg);
         }
 
         assert_eq!(pr.ops_read, 2);
