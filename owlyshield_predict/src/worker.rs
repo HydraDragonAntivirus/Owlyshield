@@ -290,34 +290,36 @@ pub mod process_record_handling {
             // START: HydraDragon Integration Logic
             // =================================================================
             #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-            if let Some(ref mut integration) = *HYDRA_DRAGON_INTEGRATION.lock().unwrap() {
-                // Check if the current process's executable has been flagged as malicious
-                if let Some(event) = integration.is_file_malicious(&precord.exepath) {
-                    if event.is_malicious && event.action_required == "kill_and_remove" {
-                        println!("!!! Threat Confirmed by HydraDragon Antivirus !!!");
-                        println!("  File: {}", event.file_path);
-                        println!("  Threat: {}", event.virus_name);
-                        
-                        Logging::info(&format!(
-                            "Threat for GID {} ({}) confirmed by HydraDragon: {}. Taking immediate action.",
-                            precord.gid, precord.appname, event.virus_name
-                        ));
-                        
-                        // Take immediate action to kill the process.
-                        // This bypasses the need for an internal prediction score.
-                        self.threat_handler.kill(precord.gid);
-                        precord.process_state = ProcessState::Killed;
+            if let Some(integration_mutex) = &*HYDRA_DRAGON_INTEGRATION {
+                if let Ok(mut integration) = integration_mutex.lock() {
+                    // Check if the current process's executable has been flagged as malicious
+                    if let Some(event) = integration.is_file_malicious(&precord.exepath) {
+                        if event.is_malicious && event.action_required == "kill_and_remove" {
+                            println!("!!! Threat Confirmed by HydraDragon Antivirus !!!");
+                            println!("  File: {}", event.file_path);
+                            println!("  Threat: {}", event.virus_name);
+                            
+                            println!(
+                                "[INFO] Threat for GID {} ({}) confirmed by HydraDragon: {}. Taking immediate action.",
+                                precord.gid, precord.appname, event.virus_name
+                            );
+                            
+                            // Take immediate action to kill the process.
+                            // This bypasses the need for an internal prediction score.
+                            self.threat_handler.kill(precord.gid);
+                            precord.process_state = ProcessState::Killed;
 
-                        // We can run the standard post-kill actions as well
-                        ActionsOnKill::new().run_actions(
-                            self.config,
-                            precord,
-                            &self.predictor_malware.predictor_behavioural.mlp.timesteps,
-                            1.0, // Use a certainty of 1.0 since it was confirmed
-                        );
+                            // We can run the standard post-kill actions as well
+                            ActionsOnKill::new().run_actions(
+                                self.config,
+                                precord,
+                                &self.predictor_malware.predictor_behavioural.mlp.timesteps,
+                                1.0, // Use a certainty of 1.0 since it was confirmed
+                            );
 
-                        // Action has been taken, so we can exit this handler early.
-                        return;
+                            // Action has been taken, so we can exit this handler early.
+                            return;
+                        }
                     }
                 }
             }

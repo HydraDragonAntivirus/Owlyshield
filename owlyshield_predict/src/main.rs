@@ -2,6 +2,24 @@
 //!
 
 // #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
+/*
+NOTE FOR THE USER:
+To fix compilation errors related to the 'windows' crate (like 'unresolved import'), you need to enable specific features in your Cargo.toml file.
+Please ensure your [dependencies] section for the 'windows' crate looks like this:
+
+[dependencies]
+# ... other dependencies
+chrono = "0.4" # Add this line for timestamp functionality
+windows = { version = "0.48.0", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+] }
+# ...
+*/
 
 extern crate num;
 #[macro_use]
@@ -35,7 +53,7 @@ use crate::connectors::register::Connectors;
 #[cfg(target_os = "windows")]
 use crate::driver_com::Driver;
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-use std::{env, path::Path, sync::LazyLock};
+use std::{env, path::Path, sync::{LazyLock, Mutex}};
 
 // Conditionally compile AVIntegration `use` statement
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
@@ -52,14 +70,15 @@ pub static HYDRA_DRAGON_ENABLED: LazyLock<bool> = LazyLock::new(|| {
 
 // Conditionally compile the HYDRA_DRAGON_INTEGRATION static variable
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-pub static HYDRA_DRAGON_INTEGRATION: LazyLock<Option<AVIntegration>> = LazyLock::new(|| {
+pub static HYDRA_DRAGON_INTEGRATION: LazyLock<Option<Mutex<AVIntegration>>> = LazyLock::new(|| {
     if *HYDRA_DRAGON_ENABLED {
         let path = env::var("ProgramFiles")
             .map(|pf| Path::new(&pf)
             .join("HydraDragonAntivirus")
             .join("av_events.json"))
             .ok();
-        path.map(|p| AVIntegration::new(p, 100))
+        // The path is not used in AVIntegration::new, but we keep the logic to check for existence
+        path.map(|_p| Mutex::new(AVIntegration::new()))
     } else {
         None
     }
