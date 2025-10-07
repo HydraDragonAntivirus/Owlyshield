@@ -63,15 +63,6 @@ impl AVIntegration {
         self.check_and_clear_cache();
         
         let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
-        
-        // Check for Sandbox-related paths that start with C: and contain Sandbox
-        let is_sandbox_related = iomsg.filepathstr.starts_with("C:") && 
-                                 iomsg.filepathstr.contains("Sandbox");
-
-        // Only process the event if it's related to Sandbox
-        if !is_sandbox_related {
-            return;
-        }
 
         // Calculate MD5 hash if file content is available
         let file_hash = self.calculate_file_hash(&iomsg.filepathstr);
