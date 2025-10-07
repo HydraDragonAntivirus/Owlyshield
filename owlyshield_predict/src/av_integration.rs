@@ -1,251 +1,301 @@
+// av_integration.rs - Dual Named Pipe Integration for HydraDragon AV ↔ Owlyshield EDR
+// Place this in: src/av_integration.rs
+
+use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::thread;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::{PathBuf};
-use std::collections::{HashMap, HashSet};
-use chrono::{DateTime, Utc, Duration};
-use md5::{Md5, Digest};
+use windows::core::PCSTR;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, ERROR_PIPE_CONNECTED};
+use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile, FlushFileBuffers};
+use windows::Win32::System::Pipes::{
+    CreateNamedPipeA, ConnectNamedPipe, DisconnectNamedPipe,
+    PIPE_ACCESS_DUPLEX, PIPE_TYPE_MESSAGE, PIPE_READMODE_MESSAGE,
+    PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
+};
 
-use crate::shared_def::{IOMessage, IrpMajorOp, DriveType};
-use crate::process::ProcessRecord;
+use crate::Logging;
 
-#[derive(Serialize, Deserialize)]
-pub struct FileEventForAV {
-    pub timestamp: DateTime<Utc>,
-    pub event_type: String,
+// Pipe 1: AV sends threat events TO EDR (Owlyshield receives)
+const PIPE_AV_TO_EDR: &str = "\\\\.\\pipe\\hydradragon_to_owlyshield";
+
+// Pipe 2: EDR sends scan requests TO AV (HydraDragon receives)
+const PIPE_EDR_TO_AV: &str = "\\\\.\\pipe\\owlyshield_to_hydradragon";
+
+const BUFFER_SIZE: u32 = 8192;
+
+/// Event sent FROM HydraDragon AV TO Owlyshield EDR
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AVThreatEvent {
+    pub timestamp: String,
     pub file_path: String,
-    pub process_name: String,
-    pub process_id: u32,
-    pub gid: u64,
-    pub file_size: Option<i64>,
-    pub entropy: Option<f64>,
-    pub bytes_transferred: Option<u64>,
-    pub extension: Option<String>,
-    pub drive_type: Option<String>,
-    pub metadata: EventMetadata,
-    pub file_hash: Option<String>,
+    pub virus_name: String,
+    pub is_malicious: bool,
+    pub detection_type: String,  // "signature", "behavioral", "heuristic"
+    pub action_required: String, // "kill_and_remove", "monitor", "quarantine"
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub gid: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct EventMetadata {
-    pub entropy_calculated: bool,
-    pub file_exists: bool,
-    pub operation_count: u64,
-    pub directories_affected: Vec<String>,
+/// Request sent FROM Owlyshield EDR TO HydraDragon AV
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EDRScanRequest {
+    pub event_type: String,      // "NEW_FILE_DETECTED", "SUSPICIOUS_ACTIVITY"
+    pub file_path: String,
+    pub timestamp: String,
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub additional_context: Option<String>,
 }
 
+/// Response sent FROM HydraDragon AV back TO Owlyshield EDR
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AVScanResponse {
+    pub file_path: String,
+    pub is_malicious: bool,
+    pub virus_name: Option<String>,
+    pub scan_timestamp: String,
+}
+
+/// AVIntegration manages both named pipes for bidirectional communication
 pub struct AVIntegration {
-    output_path: PathBuf,
-    batch_size: usize,
-    pending_events: Vec<FileEventForAV>,
-    // Track file path -> hash mapping for modification detection
-    file_hashes: HashMap<String, String>,
-    // Track unique event signatures to prevent exact duplicates
-    seen_events: HashSet<String>,
-    // Track last cache clear time
-    last_cache_clear: DateTime<Utc>,
+    // Receiver for incoming scan requests from EDR
+    scan_request_rx: Receiver<EDRScanRequest>,
+    // Sender for outgoing threat events to EDR (kept for internal use)
+    _threat_event_handle: thread::JoinHandle<()>,
+    // Handle for the scan request listener thread
+    _scan_request_handle: thread::JoinHandle<()>,
 }
 
 impl AVIntegration {
-    pub fn new(output_path: PathBuf, batch_size: usize) -> Self {
-        Self {
-            output_path,
-            batch_size,
-            pending_events: Vec::new(),
-            file_hashes: HashMap::new(),
-            seen_events: HashSet::new(),
-            last_cache_clear: Utc::now(),
-        }
-    }
-
-    pub fn queue_file_event(&mut self, iomsg: &IOMessage, process_record: &ProcessRecord) {
-        // Check if an hour has passed and clear cache if needed
-        self.check_and_clear_cache();
+    /// Create a new AVIntegration with both pipes
+    pub fn new() -> Self {
+        // Channel for receiving scan requests FROM EDR
+        let (scan_tx, scan_rx) = channel();
         
-        let event_type = IrpMajorOp::from_byte(iomsg.irp_op);
+        // Start the scan request listener (Pipe 2: EDR → AV)
+        let scan_handle = thread::spawn(move || {
+            scan_request_server_loop(scan_tx);
+        });
 
-        // Calculate MD5 hash if file content is available
-        let file_hash = self.calculate_file_hash(&iomsg.filepathstr);
-        
-        // Check if this is a duplicate event
-        if self.is_duplicate_event(iomsg, &file_hash, &event_type) {
-            return;
-        }
-
-        // Create the event object
-        let mut event = self.create_file_event(iomsg, process_record, event_type);
-        event.file_hash = file_hash.clone();
-
-        // Update tracking structures
-        if let Some(hash) = &file_hash {
-            self.file_hashes.insert(iomsg.filepathstr.clone(), hash.clone());
-        }
-        
-        // Add event signature to seen events
-        let event_signature = self.create_event_signature(iomsg, &file_hash);
-        self.seen_events.insert(event_signature);
-
-        self.pending_events.push(event);
-
-        // Flush the event batch if the size limit is reached.
-        if self.pending_events.len() >= self.batch_size {
-            self.flush_events();
-        }
-    }
-
-    fn calculate_file_hash(&self, file_path: &str) -> Option<String> {
-        // Attempt to read and hash the file
-        match std::fs::read(file_path) {
-            Ok(contents) => {
-                let mut hasher = Md5::new();
-                hasher.update(&contents);
-                let result = hasher.finalize();
-                Some(format!("{:x}", result))
+        // Threat event sender is now a function call, not a persistent thread
+        // We'll keep a dummy handle for compatibility
+        let threat_handle = thread::spawn(|| {
+            // This thread does nothing but keeps the structure consistent
+            loop {
+                thread::sleep(Duration::from_secs(60));
             }
-            Err(_) => None, // File might not exist or be accessible
+        });
+
+        Logging::info("AVIntegration: Dual-pipe communication initialized");
+        Logging::info(&format!("  - Listening for scan requests on: {}", PIPE_EDR_TO_AV));
+        Logging::info(&format!("  - Ready to send threats to: {}", PIPE_AV_TO_EDR));
+        
+        AVIntegration {
+            scan_request_rx: scan_rx,
+            _threat_event_handle: threat_handle,
+            _scan_request_handle: scan_handle,
         }
     }
 
-    fn is_duplicate_event(&self, iomsg: &IOMessage, file_hash: &Option<String>, event_type: &IrpMajorOp) -> bool {
-        let file_path = &iomsg.filepathstr;
+    /// Send a threat event TO Owlyshield EDR (Pipe 1: AV → EDR)
+    /// This is called by HydraDragon when it detects malware
+    pub fn send_threat_event(&self, event: AVThreatEvent) -> Result<(), String> {
+        send_threat_to_edr(event)
+    }
+
+    /// Poll for scan requests FROM Owlyshield EDR (Pipe 2: EDR → AV)
+    /// Returns a list of files that the EDR wants scanned
+    pub fn poll_scan_requests(&mut self) -> Vec<EDRScanRequest> {
+        let mut requests = Vec::new();
         
-        // For write/modify operations, ONLY check if the file hash is the same
-        // This ensures we send the file again if it was actually modified
-        if matches!(event_type, IrpMajorOp::IrpWrite | IrpMajorOp::IrpSetInfo) {
-            if let Some(hash) = file_hash {
-                // Check if we've seen this exact file path with this exact hash before
-                if let Some(stored_hash) = self.file_hashes.get(file_path) {
-                    if stored_hash == hash {
-                        return true; // Same file, same content - duplicate write
-                    }
+        loop {
+            match self.scan_request_rx.try_recv() {
+                Ok(request) => {
+                    Logging::info(&format!(
+                        "Received scan request from EDR: {} ({})",
+                        request.file_path, request.event_type
+                    ));
+                    requests.push(request);
                 }
-                // Different hash or new file - NOT a duplicate, send it!
-                return false;
-            }
-            // No hash available (file might not exist yet during create) - not a duplicate
-            return false;
-        }
-        
-        // For create operations, check if this exact path+hash combo was seen
-        if matches!(event_type, IrpMajorOp::IrpCreate) {
-            if let Some(hash) = file_hash {
-                if let Some(stored_hash) = self.file_hashes.get(file_path) {
-                    if stored_hash == hash {
-                        return true; // Same file created with same content - duplicate
-                    }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    Logging::error("AVIntegration: Scan request channel disconnected");
+                    break;
                 }
-                return false; // New file or different content - send it
             }
-            return false; // No hash, send it
         }
         
-        // For read operations, we DON'T want to suppress duplicates completely
-        // because different processes might read the same file and we want to track that
-        // So we only suppress if it's the EXACT same process reading the EXACT same file
-        if matches!(event_type, IrpMajorOp::IrpRead) {
-            let event_signature = self.create_event_signature(iomsg, file_hash);
-            return self.seen_events.contains(&event_signature);
-        }
+        requests
+    }
+
+    /// Send a scan response back TO Owlyshield EDR
+    /// This is called after HydraDragon completes a scan requested by the EDR
+    pub fn send_scan_response(&self, response: AVScanResponse) -> Result<(), String> {
+        // For now, we'll send this as a special threat event
+        // You could create a third pipe if you want separate response handling
+        let event = AVThreatEvent {
+            timestamp: response.scan_timestamp,
+            file_path: response.file_path,
+            virus_name: response.virus_name.unwrap_or_else(|| "Clean".to_string()),
+            is_malicious: response.is_malicious,
+            detection_type: "on_demand_scan".to_string(),
+            action_required: if response.is_malicious { "monitor" } else { "none" }.to_string(),
+            pid: None,
+            gid: None,
+        };
         
-        false
+        self.send_threat_event(event)
     }
 
-    fn create_event_signature(&self, iomsg: &IOMessage, file_hash: &Option<String>) -> String {
-        // Create a unique signature combining key event attributes
-        format!(
-            "{}:{}:{}:{}",
-            iomsg.filepathstr,
-            iomsg.irp_op,
-            iomsg.pid,
-            file_hash.as_ref().unwrap_or(&String::from("none"))
-        )
+    /// Check if a specific file path is marked as malicious (for backward compatibility)
+    pub fn is_file_malicious(&mut self, file_path: &PathBuf) -> Option<AVThreatEvent> {
+        // This method is no longer needed in the new architecture
+        // but kept for backward compatibility
+        None
     }
+}
 
-    fn create_file_event(&self, iomsg: &IOMessage, process_record: &ProcessRecord, event_type: IrpMajorOp) -> FileEventForAV {
-        let event_type_str = match event_type {
-            IrpMajorOp::IrpRead => "file_read",
-            IrpMajorOp::IrpWrite => "file_write",
-            IrpMajorOp::IrpCreate => "file_create",
-            IrpMajorOp::IrpSetInfo => "file_modify",
-            _ => "file_other",
-        }.to_string();
+/// Pipe 1 Server: Send threat events TO EDR (one-shot connection per event)
+fn send_threat_to_edr(event: AVThreatEvent) -> Result<(), String> {
+    unsafe {
+        // Try to connect to the EDR's receiving pipe
+        let pipe_handle = windows::Win32::Storage::FileSystem::CreateFileA(
+            PCSTR(format!("{}\0", PIPE_AV_TO_EDR).as_ptr()),
+            windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE.0,
+            windows::Win32::Storage::FileSystem::FILE_SHARE_NONE,
+            None,
+            windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+            windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+            None,
+        );
 
-        FileEventForAV {
-            timestamp: Utc::now(),
-            event_type: event_type_str,
-            file_path: iomsg.filepathstr.clone(),
-            process_name: process_record.appname.clone(),
-            process_id: iomsg.pid,
-            gid: iomsg.gid,
-            file_size: if iomsg.file_size >= 0 { Some(iomsg.file_size) } else { None },
-            entropy: if iomsg.is_entropy_calc == 1 { Some(iomsg.entropy) } else { None },
-            bytes_transferred: if iomsg.mem_sized_used > 0 { Some(iomsg.mem_sized_used) } else { None },
-            extension: if !iomsg.extension.trim_end_matches('\0').is_empty() { 
-                Some(iomsg.extension.trim_end_matches('\0').to_string()) 
-            } else { 
-                None 
-            },
-            drive_type: Some(format!("{:?}", DriveType::from_filepath(iomsg.filepathstr.clone()))),
-            file_hash: None, // Will be set by queue_file_event
-            metadata: EventMetadata {
-                entropy_calculated: iomsg.is_entropy_calc == 1,
-                file_exists: iomsg.runtime_features.exe_still_exists,
-                operation_count: process_record.driver_msg_count as u64,
-                directories_affected: process_record.dirs_with_files_updated.iter().cloned().collect(),
-            },
-        }
-    }
-
-    pub fn flush_events(&mut self) {
-        if self.pending_events.is_empty() {
-            return;
+        if let Err(e) = pipe_handle {
+            return Err(format!("Failed to connect to EDR pipe: {:?}", e));
         }
 
-        match self.write_events_to_file() {
-            Ok(_) => {
-                self.pending_events.clear();
-            }
-            Err(e) => {
-                eprintln!("Failed to write events to file: {}", e);
-            }
+        let pipe_handle = pipe_handle.unwrap();
+        
+        // Serialize and send the event
+        let message = serde_json::to_string(&event)
+            .map_err(|e| format!("Failed to serialize event: {}", e))?;
+        let message_bytes = message.as_bytes();
+        
+        let mut bytes_written = 0u32;
+        let result = WriteFile(
+            pipe_handle,
+            Some(message_bytes.as_ptr() as *const _),
+            message_bytes.len() as u32,
+            Some(&mut bytes_written),
+            None,
+        );
+
+        let _ = FlushFileBuffers(pipe_handle);
+        let _ = CloseHandle(pipe_handle);
+
+        if result.is_err() {
+            return Err("Failed to write to EDR pipe".to_string());
         }
-    }
 
-    fn write_events_to_file(&self) -> std::io::Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.output_path)?;
-
-        for event in &self.pending_events {
-            let json_line = serde_json::to_string(event)?;
-            writeln!(file, "{}", json_line)?;
-        }
-
-        file.sync_all()?;
+        Logging::info(&format!(
+            "Successfully sent threat event to EDR: {} - {}",
+            event.file_path, event.virus_name
+        ));
+        
         Ok(())
     }
+}
 
-    // Call this periodically or on shutdown
-    pub fn force_flush(&mut self) {
-        self.flush_events();
+/// Pipe 2 Server: Receive scan requests FROM EDR (persistent listener)
+fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
+    Logging::info(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
+    
+    loop {
+        unsafe {
+            // Create the named pipe to RECEIVE requests from EDR
+            let pipe_handle = CreateNamedPipeA(
+                PCSTR(format!("{}\0", PIPE_EDR_TO_AV).as_ptr()),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                BUFFER_SIZE,
+                BUFFER_SIZE,
+                0,
+                None,
+            );
+
+            if let Err(e) = pipe_handle {
+                Logging::error(&format!("Failed to create scan request pipe: {:?}", e));
+                thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+
+            let pipe_handle = pipe_handle.unwrap();
+            
+            // Wait for EDR to connect
+            let connected = ConnectNamedPipe(pipe_handle, None);
+            
+            match connected {
+                Ok(_) | Err(e) if e.code().0 as u32 == ERROR_PIPE_CONNECTED.0 => {
+                    // EDR connected, read the scan request
+                    if let Some(request) = read_scan_request(pipe_handle) {
+                        if let Err(e) = tx.send(request) {
+                            Logging::error(&format!("Failed to forward scan request: {}", e));
+                        }
+                    }
+                    
+                    // Disconnect and close
+                    let _ = FlushFileBuffers(pipe_handle);
+                    let _ = DisconnectNamedPipe(pipe_handle);
+                    let _ = CloseHandle(pipe_handle);
+                }
+                Err(e) => {
+                    Logging::error(&format!("ConnectNamedPipe failed on scan request listener: {:?}", e));
+                    let _ = CloseHandle(pipe_handle);
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
     }
+}
 
-    // Clear tracking data to prevent unbounded memory growth
-    pub fn clear_tracking_cache(&mut self) {
-        self.file_hashes.clear();
-        self.seen_events.clear();
-        self.last_cache_clear = Utc::now();
-    }
-
-    // Check if an hour has passed and clear cache automatically
-    fn check_and_clear_cache(&mut self) {
-        let now = Utc::now();
-        let elapsed = now.signed_duration_since(self.last_cache_clear);
+/// Read and parse a scan request from the pipe
+fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
+    unsafe {
+        let mut buffer = vec![0u8; BUFFER_SIZE as usize];
+        let mut bytes_read = 0u32;
         
-        // Clear cache if more than 1 hour has passed
-        if elapsed >= Duration::hours(1) {
-            self.clear_tracking_cache();
+        let result = ReadFile(
+            pipe_handle,
+            Some(buffer.as_mut_ptr() as *mut _),
+            buffer.len() as u32,
+            Some(&mut bytes_read),
+            None,
+        );
+
+        if result.is_err() || bytes_read == 0 {
+            return None;
+        }
+
+        let data = match std::str::from_utf8(&buffer[..bytes_read as usize]) {
+            Ok(s) => s,
+            Err(e) => {
+                Logging::error(&format!("Invalid UTF-8 in scan request: {}", e));
+                return None;
+            }
+        };
+
+        match serde_json::from_str::<EDRScanRequest>(data) {
+            Ok(request) => Some(request),
+            Err(e) => {
+                Logging::error(&format!("Failed to parse scan request JSON: {}", e));
+                Logging::error(&format!("Data received: {}", data));
+                None
+            }
         }
     }
 }

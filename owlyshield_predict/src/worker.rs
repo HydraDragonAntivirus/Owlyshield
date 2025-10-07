@@ -220,6 +220,10 @@ pub mod process_record_handling {
     use crate::novelty::{Rule, StateSave};
     use crate::worker::threat_handling::ThreatHandler;
     use crate::Logging;
+    
+    // Conditionally import the global static integration from main.rs
+    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+    use crate::HYDRA_DRAGON_INTEGRATION;
 
     pub trait Exepath {
         fn exepath(&self, iomsg: &IOMessage) -> Option<PathBuf>;
@@ -282,6 +286,46 @@ pub mod process_record_handling {
     impl ProcessRecordIOHandler for ProcessRecordHandlerLive<'_> {
         #[cfg(target_os = "windows")]
         fn handle_io(&mut self, precord: &mut ProcessRecord) {
+            // =================================================================
+            // START: HydraDragon Integration Logic
+            // =================================================================
+            #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+            if let Some(ref mut integration) = *HYDRA_DRAGON_INTEGRATION.lock().unwrap() {
+                // Check if the current process's executable has been flagged as malicious
+                if let Some(event) = integration.is_file_malicious(&precord.exepath) {
+                    if event.is_malicious && event.action_required == "kill_and_remove" {
+                        println!("!!! Threat Confirmed by HydraDragon Antivirus !!!");
+                        println!("  File: {}", event.file_path);
+                        println!("  Threat: {}", event.virus_name);
+                        
+                        Logging::info(&format!(
+                            "Threat for GID {} ({}) confirmed by HydraDragon: {}. Taking immediate action.",
+                            precord.gid, precord.appname, event.virus_name
+                        ));
+                        
+                        // Take immediate action to kill the process.
+                        // This bypasses the need for an internal prediction score.
+                        self.threat_handler.kill(precord.gid);
+                        precord.process_state = ProcessState::Killed;
+
+                        // We can run the standard post-kill actions as well
+                        ActionsOnKill::new().run_actions(
+                            self.config,
+                            precord,
+                            &self.predictor_malware.predictor_behavioural.mlp.timesteps,
+                            1.0, // Use a certainty of 1.0 since it was confirmed
+                        );
+
+                        // Action has been taken, so we can exit this handler early.
+                        return;
+                    }
+                }
+            }
+            // =================================================================
+            // END: HydraDragon Integration Logic
+            // =================================================================
+
+            // If no external detection, proceed with normal Owlyshield prediction
             if let Some(prediction_behavioural) = self.predictor_malware.predict(precord) {
                 if prediction_behavioural > self.config.threshold_prediction
                     || precord.appname.contains("TEST-OLRANSOM")
@@ -340,24 +384,6 @@ pub mod process_record_handling {
                         self.config[Param::ConfigPath]
                     );
 
-                    // match self.config.get_kill_policy() {
-                    //     KillPolicy::Suspend => {
-                    //         if precord.process_state != ProcessState::Suspended {
-                    //             try_suspend(precord);
-                    //         }
-                    //     }
-                    //     KillPolicy::Kill => {
-                    //         match self.tx_kill.send(precord.gid) {
-                    //             Ok(()) => (),
-                    //             Err(e) => {
-                    //                 // error!("Cannot send iomsg: {}", e);
-                    //                 println!("Cannot send iomsg: {}", e);
-                    //                 Logging::error(format!("Cannot send iomsg: {}", e).as_str());
-                    //             }
-                    //         }
-                    //     }
-                    //     KillPolicy::DoNothing => {}
-                    // }
                     ActionsOnKill::new().run_actions(
                         self.config,
                         precord,
@@ -383,7 +409,6 @@ pub mod process_record_handling {
     }
 
     pub struct ProcessRecordHandlerReplay {
-        // predictor_behavioural: PredictorHandlerBehavioural<'a>,
         csvwriter: CsvWriter,
         timesteps_stride: usize,
     }
@@ -397,34 +422,17 @@ pub mod process_record_handling {
                     .write_debug_csv_files(&precord.appname, precord.gid, &timestep, precord.time)
                     .expect("Cannot write csv learn file");
             }
-            // if let Some(prediction) = self.predictor_behavioural.predict(precord) {
-            // if prediction > self.config.threshold_prediction {
-            //     println!("Record {}: {}", precord.appname, prediction);
-            //     println!("########");
-            // }
-            // }
         }
     }
 
     impl ProcessRecordHandlerReplay {
         pub fn new(config: &Config) -> ProcessRecordHandlerReplay {
             ProcessRecordHandlerReplay {
-                // predictor_behavioural: PredictorHandlerBehavioural::new(config),
                 csvwriter: CsvWriter::from(config),
                 timesteps_stride: config.timesteps_stride,
             }
         }
     }
-
-    //#[cfg(target_os = "windows")]
-    //fn try_suspend(proc: &mut ProcessRecord) {
-    //    proc.process_state = ProcessState::Suspended;
-    //    for pid in &proc.pids {
-    //        unsafe {
-    //            DebugActiveProcess(*pid);
-    //        }
-    //    }
-    //}
 
     pub struct ProcessRecordHandlerNovelty<'a> {
         config: &'a Config,
@@ -443,35 +451,25 @@ pub mod process_record_handling {
 
                     match self.rules.get(app_file) {
                         Some(r) => {
-                            // rule file loaded
                             rule = r.to_owned();
                         },
                         None => {
-                            // rule file is not loaded
                             let path = PathBuf::from(novelty_path).join(app_file.to_string() + ".yml");
                             if Rule::get_files(novelty_path).contains(app_file) {
-                                // rule file exists
                                 rule = Rule::deserialize_yml_file(path);
                                 let pathsave = PathBuf::from(novelty_path).join(app_file.to_string() + "_save.json");
                                 let savestate = StateSave::load_file(&pathsave).unwrap();
                                 savestate.update_precord(precord);
                             } else {
-                                // rule file does not exists. Let's create it
                                 rule = Rule::from(precord);
                                 Rule::serialize_yml_file(path, rule.clone());
                             }
-                            // update cache
                             self.rules.push(app_file.to_string(), rule.clone());
                         },
                     }
-
-                    // JD == 0 => subcluster to ignore
-                    // 0 < JD < 1 => cluster is expanding. To report.
-                    // JD == 1 => Distinct cluster to report
+                    
                     if precord.driver_msg_count % 50 == 0 {
-                        // update the rule in memory
                         let mut newrule = rule.learn(precord);
-                        //prediction here
                         if !newrule.is_clusters_empty() {
                             let dis = rule.distance(&newrule, precord);
                             let opt_clusterdistance_min = dis.iter().min_by(|cd1, cd2| cd1.distance.partial_cmp(&cd2.distance).unwrap_or(std::cmp::Ordering::Equal));
@@ -480,17 +478,14 @@ pub mod process_record_handling {
                             if let Some(clusterdistance_min) = opt_clusterdistance_min {
                                 if clusterdistance_min.distance > 0f32 {
                                     if clusterdistance_min.distance == 1f32 {
-                                        // new cluster
                                         Logging::novelty(&format!("[{}] New Cluster: {}", &precord.appname, clusterdistance_min.dir2.display()));
                                     } else {
-                                        // 0 < 1 : expanding cluster
                                         Logging::novelty(&format!("[{}] Expanding Cluster: {} => {}", &precord.appname, clusterdistance_min.dir1.display(), clusterdistance_min.dir2.display()));
                                     }
                                 }
                             }
 
                             if now > (rule.update_time.unwrap_or_else(|| Local::now()) + chrono::Duration::minutes(20)) {
-                                //update the rule file
                                 newrule.update_time = Some(now);
                                 Rule::serialize_yml_file(PathBuf::from(novelty_path).join(app_file.to_string() + ".yml"), newrule.clone());
                                 let savestate = StateSave::new(precord);
@@ -576,11 +571,9 @@ mod process_records {
                                         if let Some(proc) = self.process_records.get_mut(&gid) {
                                             match command {
                                                 "A" => {
-                                                    // println!("awake !");
                                                     threat_handler.awake(proc, false);
                                                 }
                                                 "K" => {
-                                                    // println!("FILE K DETECTED");
                                                     threat_handler.awake(proc, true);
                                                     threat_handler.kill(gid);
                                                 }
@@ -589,8 +582,6 @@ mod process_records {
                                             if !fs::remove_file(pbuf_command_file.as_path()).is_ok() {
                                                 println!("cannot remove");
                                                 eprintln!("pbuf_command_file = {:?}", pbuf_command_file);
-                                                // try_kill(driver, proc);
-                                                // ActionsOnKill::new().run_actions(&config, &proc, &proc.prediction_matrix.clone(), proc.predictions.get_last_prediction().unwrap_or(0.0));
                                             }
                                         }
                                     }
@@ -636,14 +627,6 @@ pub mod worker_instance {
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::worker::threat_handling::ThreatHandler;
     
-    // Conditionally import AVIntegration and HYDRA_DRAGON_ENABLED
-    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-    use std::env;
-    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-    use crate::av_integration::AVIntegration;
-    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-    use crate::HYDRA_DRAGON_ENABLED;
-
     pub trait IOMsgPostProcessor {
         fn postprocess(&mut self, iomsg: &mut IOMessage, precord: &ProcessRecord);
     }
@@ -752,9 +735,6 @@ pub mod worker_instance {
         process_record_handler: Option<Box<dyn ProcessRecordIOHandler + 'a>>,
         exepath_handler: Box<dyn Exepath>,
         iomsg_postprocessors: Vec<Box<dyn IOMsgPostProcessor>>,
-        // Conditionally compile the av_integration field
-        #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-        av_integration: Option<AVIntegration>, 
     }
 
     impl<'a> Worker<'a> {
@@ -765,19 +745,6 @@ pub mod worker_instance {
 				process_record_handler: None,
 				exepath_handler: Box::<ExepathLive>::default(),
 				iomsg_postprocessors: vec![],
-                // Conditionally initialize the av_integration field
-			    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-			    av_integration: if *HYDRA_DRAGON_ENABLED {
-				    let path = env::var("ProgramFiles")
-					    .map(|pf| Path::new(&pf)
-					    .join("HydraDragonAntivirus")
-					    .join("hydradragon")
-                        .join("av_events.json"))
-					    .ok();
-				    path.map(|p| AVIntegration::new(p, 100))
-				} else {
-					None
-				},
 			}
 		}
 
@@ -818,27 +785,14 @@ pub mod worker_instance {
 				process_record_handler: Some(Box::new(ProcessRecordHandlerReplay::new(config))),
 				exepath_handler: Box::<ExePathReplay>::default(),
 				iomsg_postprocessors: vec![],
-                #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-                av_integration: None,
 			}
 		}
 
         pub fn process_io(&mut self, iomsg: &mut IOMessage) {
             self.register_precord(iomsg);
             if let Some(precord) = self.process_records.get_precord_mut_by_gid(iomsg.gid) {
-                
-                // The signature for `add_irp_record` needs to accept an Option.
-                // We get the mutable reference to av_integration if the feature is enabled,
-                // otherwise we pass None.
-                #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-                let av_integration = self.av_integration.as_mut();
-                
-                #[cfg(not(all(target_os = "windows", feature = "hydradragon")))]
-                let av_integration = None;
-
-                // This assumes `add_irp_record` in `process.rs` is defined as:
-                // pub fn add_irp_record(&mut self, iomsg: &IOMessage, av_integration: Option<&mut AVIntegration>)
-                precord.add_irp_record(iomsg, av_integration);
+                // The third-party AV check now happens inside handle_io
+                precord.add_irp_record(iomsg, None); // Passing None as av_integration is no longer directly handled here.
 
                 if let Some(process_record_handler) = &mut self.process_record_handler {
                     process_record_handler.handle_io(precord);
@@ -866,10 +820,8 @@ pub mod worker_instance {
                             .unwrap_or_else(|| Path::new("/"))
                             .starts_with(r"C:\Windows\System32")
                         {
-                            // if appname.contains("Ransom_") || appname.contains("Virus_") {
                             let precord = ProcessRecord::from(iomsg, appname, exepath.clone());
                             self.process_records.insert_precord(iomsg.gid, precord);
-                            // }
                         }
                     }
                 }
@@ -885,9 +837,6 @@ pub mod worker_instance {
         }
 
         fn appname_from_exepath(&self, exepath: &Path) -> Option<String> {
-            /*exepath
-                .file_name()
-                .map(|filename| filename.to_string_lossy().to_string())*/
             exepath.to_str().map(|s| s.to_string())
         }
     }
