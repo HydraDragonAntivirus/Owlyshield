@@ -220,10 +220,6 @@ pub mod process_record_handling {
     use crate::novelty::{Rule, StateSave};
     use crate::worker::threat_handling::ThreatHandler;
     use crate::Logging;
-    
-    // Conditionally import the global static integration from main.rs
-    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-    use crate::HYDRA_DRAGON_INTEGRATION;
 
     pub trait Exepath {
         fn exepath(&self, iomsg: &IOMessage) -> Option<PathBuf>;
@@ -286,48 +282,9 @@ pub mod process_record_handling {
     impl ProcessRecordIOHandler for ProcessRecordHandlerLive<'_> {
         #[cfg(target_os = "windows")]
         fn handle_io(&mut self, precord: &mut ProcessRecord) {
-            // =================================================================
-            // START: HydraDragon Integration Logic
-            // =================================================================
-            #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-            if let Some(integration_mutex) = &*HYDRA_DRAGON_INTEGRATION {
-                if let Ok(mut integration) = integration_mutex.lock() {
-                    // Check if the current process's executable has been flagged as malicious
-                    if let Some(event) = integration.is_file_malicious(&precord.exepath) {
-                        if event.is_malicious && event.action_required == "kill_and_remove" {
-                            println!("!!! Threat Confirmed by HydraDragon Antivirus !!!");
-                            println!("  File: {}", event.file_path);
-                            println!("  Threat: {}", event.virus_name);
-                            
-                            println!(
-                                "[INFO] Threat for GID {} ({}) confirmed by HydraDragon: {}. Taking immediate action.",
-                                precord.gid, precord.appname, event.virus_name
-                            );
-                            
-                            // Take immediate action to kill the process.
-                            // This bypasses the need for an internal prediction score.
-                            self.threat_handler.kill(precord.gid);
-                            precord.process_state = ProcessState::Killed;
-
-                            // We can run the standard post-kill actions as well
-                            ActionsOnKill::new().run_actions(
-                                self.config,
-                                precord,
-                                &self.predictor_malware.predictor_behavioural.mlp.timesteps,
-                                1.0, // Use a certainty of 1.0 since it was confirmed
-                            );
-
-                            // Action has been taken, so we can exit this handler early.
-                            return;
-                        }
-                    }
-                }
-            }
-            // =================================================================
-            // END: HydraDragon Integration Logic
-            // =================================================================
-
-            // If no external detection, proceed with normal Owlyshield prediction
+            // HydraDragon integration is now handled through threat events sent TO the EDR
+            // This code path only handles Owlyshield's internal predictions
+            
             if let Some(prediction_behavioural) = self.predictor_malware.predict(precord) {
                 if prediction_behavioural > self.config.threshold_prediction
                     || precord.appname.contains("TEST-OLRANSOM")

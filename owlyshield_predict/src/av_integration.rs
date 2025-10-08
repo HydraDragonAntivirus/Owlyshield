@@ -1,8 +1,9 @@
-// av_integration.rs - Dual Named Pipe Integration for HydraDragon AV ↔ Owlyshield EDR
-// Place this in: src/av_integration.rs
+// src/av_integration.rs - Dual Named Pipe Integration for HydraDragon AV ↔ Owlyshield EDR
+// Only compiled when --features hydradragon is enabled
+
+#![cfg(feature = "hydradragon")]
 
 use std::ffi::CString;
-use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
@@ -12,12 +13,12 @@ use serde::{Deserialize, Serialize};
 use windows::core::PCSTR;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL,
-    FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES,
+    CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
+    FILE_SHARE_NONE, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe,
-    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, NAMED_PIPE_MODE,
+    ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, NAMED_PIPE_MODE,
 };
 
 use crate::IOMessage;
@@ -31,7 +32,7 @@ const PIPE_EDR_TO_AV: &str = r"\\.\pipe\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
 
-// numeric value of PIPE_ACCESS_DUPLEX is 0x0000_0003
+// numeric value of PIPE_ACCESS_DUPLEX is 0x0000_0003 (we wrap it in FILE_FLAGS_AND_ATTRIBUTES)
 const PIPE_ACCESS_DUPLEX_FLAGS: FILE_FLAGS_AND_ATTRIBUTES = FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003);
 
 /// Event sent FROM HydraDragon AV TO Owlyshield EDR
@@ -42,7 +43,7 @@ pub struct AVThreatEvent {
     pub virus_name: String,
     pub is_malicious: bool,
     pub detection_type: String,  // "signature", "behavioral", "heuristic"
-    pub action_required: String, // "kill_and_remove", "monitor", "quarantine"
+    pub action_required: String, // "kill_and_remove"
     #[serde(default)]
     pub pid: Option<u32>,
     #[serde(default)]
@@ -100,7 +101,7 @@ impl AVIntegration {
             }
         });
 
-        println!("[INFO] AVIntegration: Dual-pipe communication initialized");
+        println!("[INFO] AVIntegration: Dual-pipe communication initialized (HydraDragon mode)");
         println!("[INFO]   - Listening for scan requests on: {}", PIPE_EDR_TO_AV);
         println!("[INFO]   - Ready to send threats to: {}", PIPE_AV_TO_EDR);
         
@@ -153,19 +154,12 @@ impl AVIntegration {
             virus_name: response.virus_name.unwrap_or_else(|| "Clean".to_string()),
             is_malicious: response.is_malicious,
             detection_type: "on_demand_scan".to_string(),
-            action_required: if response.is_malicious { "monitor" } else { "none" }.to_string(),
+            action_required: "kill_and_remove".to_string(),
             pid: None,
             gid: None,
         };
         
         self.send_threat_event(event)
-    }
-
-    /// Check if a specific file path is marked as malicious (for backward compatibility)
-    pub fn is_file_malicious(&mut self, _file_path: &PathBuf) -> Option<AVThreatEvent> {
-        // This method is no longer needed in the new architecture
-        // but kept for backward compatibility
-        None
     }
     
     /// Queue a file event to be scanned by HydraDragon AV
@@ -184,26 +178,29 @@ impl AVIntegration {
     }
 }
 
-/// Pipe 1 Server: Send threat events TO EDR (one-shot connection per event)
-fn send_threat_to_edr(event: AVThreatEvent) -> Result<(), String> {
+/// Pipe 1 Client: Send threat events TO EDR (one-shot connection per event)
+fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     unsafe {
         // Use CString to ensure lifetime of the pointer passed into the WinAPI call
         let pipe_name_c = CString::new(PIPE_AV_TO_EDR).map_err(|e| format!("Invalid pipe name: {}", e))?;
-        let pipe_handle = CreateFileA(
+
+        // enforce kill_and_remove policy
+        event.action_required = "kill_and_remove".to_string();
+
+        let pipe_handle_res = CreateFileA(
             PCSTR(pipe_name_c.as_ptr() as *const u8),
             FILE_GENERIC_WRITE.0,
             FILE_SHARE_NONE,
             None,
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
-            None,
+            HANDLE::default(),
         );
 
-        if let Err(e) = pipe_handle {
-            return Err(format!("Failed to connect to EDR pipe: {:?}", e));
-        }
-
-        let pipe_handle = pipe_handle.unwrap();
+        let pipe_handle = match pipe_handle_res {
+            Ok(h) => h,
+            Err(e) => return Err(format!("Failed to connect to EDR pipe: {:?}", e)),
+        };
         
         // Serialize and send the event
         let message = serde_json::to_string(&event)
@@ -226,8 +223,8 @@ fn send_threat_to_edr(event: AVThreatEvent) -> Result<(), String> {
         }
 
         println!(
-            "[INFO] Successfully sent threat event to EDR: {} - {}",
-            event.file_path, event.virus_name
+            "[INFO] Successfully sent threat event to EDR: {} - {} ({} bytes)",
+            event.file_path, event.virus_name, bytes_written
         );
         
         Ok(())
@@ -238,20 +235,22 @@ fn send_threat_to_edr(event: AVThreatEvent) -> Result<(), String> {
 fn send_scan_request_to_av(request: EDRScanRequest) -> Result<(), String> {
     unsafe {
         let pipe_name_c = CString::new(PIPE_EDR_TO_AV).map_err(|e| format!("Invalid pipe name: {}", e))?;
-        let pipe_handle = CreateFileA(
+        let pipe_handle_res = CreateFileA(
             PCSTR(pipe_name_c.as_ptr() as *const u8),
             FILE_GENERIC_WRITE.0,
             FILE_SHARE_NONE,
             None,
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
-            None,
+            HANDLE::default(),
         );
 
-        if let Err(e) = pipe_handle {
-            return Err(format!("Failed to connect to AV pipe for scan request: {:?}", e));
-        }
-        let pipe_handle = pipe_handle.unwrap();
+        let pipe_handle = match pipe_handle_res {
+            Ok(h) => h,
+            Err(e) => {
+                return Err(format!("Failed to connect to AV pipe for scan request: {:?}", e));
+            }
+        };
 
         let message = serde_json::to_string(&request)
             .map_err(|e| format!("Failed to serialize scan request: {}", e))?;
@@ -291,9 +290,9 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 }
             };
 
-            let pipe_handle = CreateNamedPipeA(
+            let pipe_handle_res = CreateNamedPipeA(
                 PCSTR(pipe_name_c.as_ptr() as *const u8),
-                PIPE_ACCESS_DUPLEX_FLAGS, // correct FILE_FLAGS_AND_ATTRIBUTES type
+                PIPE_ACCESS_DUPLEX_FLAGS,
                 NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0),
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
@@ -302,14 +301,15 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 None,
             );
 
-            if let Err(e) = pipe_handle {
-                eprintln!("[ERROR] Failed to create scan request pipe: {:?}", e);
-                thread::sleep(Duration::from_secs(5));
-                continue;
-            }
+            let pipe_handle = match pipe_handle_res {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("[ERROR] Failed to create scan request pipe: {:?}", e);
+                    thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            };
 
-            let pipe_handle = pipe_handle.unwrap();
-            
             // Wait for EDR to connect
             let connected: BOOL = ConnectNamedPipe(pipe_handle, None);
 
@@ -346,14 +346,15 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
 fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
     unsafe {
         let mut buffer = vec![0u8; BUFFER_SIZE as usize];
-        let mut bytes_read = 0u32;
-        
+        let mut bytes_read: u32 = 0;
+
+        // Correct ReadFile signature for windows = "0.48.0"
         let result: BOOL = ReadFile(
             pipe_handle,
-            Some(buffer.as_mut_ptr() as *mut _),
-            buffer.len() as u32,
-            Some(&mut bytes_read),
-            None,
+            Some(buffer.as_mut_ptr() as *mut _), // lpBuffer
+            buffer.len() as u32,                 // nNumberOfBytesToRead
+            Some(&mut bytes_read as *mut u32),   // lpNumberOfBytesRead
+            None,                                // lpOverlapped
         );
 
         if !result.as_bool() || bytes_read == 0 {

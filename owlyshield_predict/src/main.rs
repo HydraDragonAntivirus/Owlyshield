@@ -72,13 +72,8 @@ pub static HYDRA_DRAGON_ENABLED: LazyLock<bool> = LazyLock::new(|| {
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
 pub static HYDRA_DRAGON_INTEGRATION: LazyLock<Option<Mutex<AVIntegration>>> = LazyLock::new(|| {
     if *HYDRA_DRAGON_ENABLED {
-        let path = env::var("ProgramFiles")
-            .map(|pf| Path::new(&pf)
-            .join("HydraDragonAntivirus")
-            .join("av_events.json"))
-            .ok();
-        // The path is not used in AVIntegration::new, but we keep the logic to check for existence
-        path.map(|_p| Mutex::new(AVIntegration::new()))
+        // Directly initialize the AVIntegration when HydraDragon is present.
+        Some(Mutex::new(AVIntegration::new()))
     } else {
         None
     }
