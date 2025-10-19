@@ -2,25 +2,6 @@
 //!
 
 // #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
-/*
-NOTE FOR THE USER:
-To fix compilation errors related to the 'windows' crate (like 'unresolved import'), you need to enable specific features in your Cargo.toml file.
-Please ensure your [dependencies] section for the 'windows' crate looks like this:
-
-[dependencies]
-# ... other dependencies
-chrono = "0.4" # Add this line for timestamp functionality
-windows = { version = "0.48.0", features = [
-    "Win32_Foundation",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Pipes",
-    "Win32_System_IO",
-    "Win32_System_Threading",
-    "Win32_System_ProcessStatus",
-] }
-# ...
-*/
-
 extern crate num;
 #[macro_use]
 extern crate num_derive;

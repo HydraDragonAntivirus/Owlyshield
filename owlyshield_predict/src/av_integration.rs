@@ -25,10 +25,10 @@ use crate::IOMessage;
 use crate::process::ProcessRecord;
 
 // Pipe 1: AV sends threat events TO EDR (Owlyshield receives)
-const PIPE_AV_TO_EDR: &str = r"\\.\pipe\hydradragon_to_owlyshield";
+const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
 
 // Pipe 2: EDR sends scan requests TO AV (HydraDragon receives)
-const PIPE_EDR_TO_AV: &str = r"\\.\pipe\owlyshield_to_hydradragon";
+const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
 
@@ -92,13 +92,9 @@ impl AVIntegration {
             scan_request_server_loop(scan_tx);
         });
 
-        // Threat event sender is now a function call, not a persistent thread
-        // We'll keep a dummy handle for compatibility
+        // Threat event listener (Pipe 1: AV -> EDR)
         let threat_handle = thread::spawn(|| {
-            // This thread does nothing but keeps the structure consistent
-            loop {
-                thread::sleep(Duration::from_secs(60));
-            }
+            threat_event_server_loop();
         });
 
         println!("[INFO] AVIntegration: Dual-pipe communication initialized (HydraDragon mode)");
@@ -339,6 +335,78 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 }
             }
         }
+    }
+}
+
+fn threat_event_server_loop() {
+    println!("[INFO] Starting threat event listener (Pipe 1) on: {}", PIPE_AV_TO_EDR);
+
+    loop {
+        unsafe {
+            let pipe_name_c = match CString::new(PIPE_AV_TO_EDR) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[ERROR] Invalid pipe name for threat listener: {}", e);
+                    thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            };
+
+            let pipe_handle_res = CreateNamedPipeA(
+                PCSTR(pipe_name_c.as_ptr() as *const u8),
+                PIPE_ACCESS_DUPLEX_FLAGS,
+                NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0),
+                PIPE_UNLIMITED_INSTANCES,
+                BUFFER_SIZE,
+                BUFFER_SIZE,
+                0,
+                None,
+            );
+
+            let pipe_handle = match pipe_handle_res {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("[ERROR] Failed to create threat event pipe: {:?}", e);
+                    thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            };
+
+            let connected: BOOL = ConnectNamedPipe(pipe_handle, None);
+
+            if connected.as_bool() || GetLastError() == ERROR_PIPE_CONNECTED {
+                handle_threat_connection(pipe_handle);
+            } else {
+                eprintln!("[ERROR] ConnectNamedPipe failed on threat listener");
+                let _ = CloseHandle(pipe_handle);
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+fn handle_threat_connection(pipe_handle: HANDLE) {
+    unsafe {
+        let mut buffer = vec![0u8; BUFFER_SIZE as usize];
+        let mut bytes_read: u32 = 0;
+
+        let result = ReadFile(
+            pipe_handle,
+            Some(buffer.as_mut_ptr() as *mut _),
+            buffer.len() as u32,
+            Some(&mut bytes_read as *mut u32),
+            None,
+        );
+
+        if result.as_bool() && bytes_read > 0 {
+            let data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
+            println!("[INFO] Received threat event: {}", data);
+            // optionally process event here
+        }
+
+        let _ = FlushFileBuffers(pipe_handle);
+        let _ = DisconnectNamedPipe(pipe_handle);
+        let _ = CloseHandle(pipe_handle);
     }
 }
 
