@@ -1,6 +1,3 @@
-// src/av_integration.rs - Dual Named Pipe Integration for HydraDragon AV ↔ Owlyshield EDR
-// Only compiled when --features hydradragon is enabled
-
 #![cfg(feature = "hydradragon")]
 
 use std::ffi::CString;
@@ -18,23 +15,20 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, NAMED_PIPE_MODE, PIPE_ACCESS_DUPLEX,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, NAMED_PIPE_MODE,
 };
 
 use crate::IOMessage;
 use crate::process::ProcessRecord;
-use crate::logging::Logging; // <-- use your logging module
+use crate::logging::Logging; // <-- your logging module
 
 // Pipe 1: AV sends threat events TO EDR (Owlyshield receives)
 const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
 
 // Pipe 2: EDR sends scan requests TO AV (HydraDragon receives)
-const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
+const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydragon";
 
 const BUFFER_SIZE: u32 = 8192;
-
-// numeric value of PIPE_ACCESS_DUPLEX is 0x0000_0003 (we wrap it in FILE_FLAGS_AND_ATTRIBUTES)
-// const PIPE_ACCESS_DUPLEX_FLAGS: FILE_FLAGS_AND_ATTRIBUTES = FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003);
 
 /// Event sent FROM HydraDragon AV TO Owlyshield EDR
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -88,24 +82,16 @@ impl AVIntegration {
         // Channel for receiving scan requests FROM EDR
         let (scan_tx, scan_rx) = channel();
 
-        Logging::info("[DIAG] AVIntegration::new() called");
-        
         // Start the scan request listener (Pipe 2: EDR → AV)
         let scan_handle = thread::spawn(move || {
-            Logging::info(&format!("[DIAG] spawn scan_request_server_loop for {}", PIPE_EDR_TO_AV));
             scan_request_server_loop(scan_tx);
         });
 
         // Threat event listener (Pipe 1: AV -> EDR)
         let threat_handle = thread::spawn(|| {
-            Logging::info(&format!("[DIAG] spawn threat_event_server_loop for {}", PIPE_AV_TO_EDR));
             threat_event_server_loop();
         });
 
-        Logging::info(&format!("[INFO] AVIntegration: Dual-pipe communication initialized (HydraDragon mode)"));
-        Logging::info(&format!("[INFO]   - Listening for scan requests on: {}", PIPE_EDR_TO_AV));
-        Logging::info(&format!("[INFO]   - Ready to send threats to: {}", PIPE_AV_TO_EDR));
-        
         AVIntegration {
             scan_request_rx: scan_rx,
             _threat_event_handle: threat_handle,
@@ -127,15 +113,16 @@ impl AVIntegration {
         loop {
             match self.scan_request_rx.try_recv() {
                 Ok(request) => {
-                    Logging::info(&format!(
-                        "[INFO] Received scan request from EDR: {} ({})",
+                    // use existing logging methods (warning/error/novelty/alert) as appropriate
+                    Logging::novelty(&format!(
+                        "Received scan request from EDR: {} ({})",
                         request.file_path, request.event_type
                     ));
                     requests.push(request);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    Logging::error("[ERROR] AVIntegration: Scan request channel disconnected");
+                    Logging::error("AVIntegration: Scan request channel disconnected");
                     break;
                 }
             }
@@ -174,9 +161,7 @@ impl AVIntegration {
         };
 
         if let Err(e) = send_scan_request_to_av(request) {
-            Logging::error(&format!("[ERROR] Failed to send scan request to AV: {}", e));
-        } else {
-            Logging::info("[DIAG] Successfully wrote scan request to AV pipe (one-shot client)");
+            Logging::error(&format!("Failed to send scan request to AV: {}", e));
         }
     }
 }
@@ -236,12 +221,13 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
         let _ = CloseHandle(pipe_handle);
 
         if !result.as_bool() {
-            Logging::error("[ERROR] Failed to write to EDR pipe");
+            Logging::error("Failed to write to EDR pipe");
             return Err("Failed to write to EDR pipe".to_string());
         }
 
-        Logging::info(&format!(
-            "[INFO] Successfully sent threat event to EDR: {} - {} ({} bytes)",
+        // success: use novelty (or another existing level) to note the event
+        Logging::novelty(&format!(
+            "Successfully sent threat event to EDR: {} - {} ({} bytes)",
             event.file_path, event.virus_name, bytes_written
         ));
         
@@ -293,17 +279,17 @@ fn send_scan_request_to_av(request: EDRScanRequest) -> Result<(), String> {
         let _ = CloseHandle(pipe_handle);
 
         if !result.as_bool() {
-            Logging::error("[ERROR] Failed to write scan request to AV pipe");
+            Logging::error("Failed to write scan request to AV pipe");
             return Err("Failed to write scan request to AV pipe".to_string());
         }
-        Logging::info(&format!("[DIAG] Sent scan request to AV: {} ({} bytes)", request.file_path, bytes_written));
+        Logging::novelty(&format!("Sent scan request to AV: {} ({} bytes)", request.file_path, bytes_written));
         Ok(())
     }
 }
 
 /// Pipe 2 Server: Receive scan requests FROM EDR (persistent listener)
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
-    Logging::info(&format!("[INFO] Starting scan request listener: {}", PIPE_EDR_TO_AV));
+    Logging::novelty(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
     
     loop {
         unsafe {
@@ -311,7 +297,7 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             let pipe_name_c = match CString::new(PIPE_EDR_TO_AV) {
                 Ok(s) => s,
                 Err(e) => {
-                    Logging::error(&format!("[ERROR] Invalid pipe name for scan listener: {}", e));
+                    Logging::error(&format!("Invalid pipe name for scan listener: {}", e));
                     thread::sleep(Duration::from_secs(5));
                     continue;
                 }
@@ -320,8 +306,10 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
             let pipe_handle_res = CreateNamedPipeA(
                 pcstr,
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0,
+                // dwOpenMode: FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003) == numeric PIPE_ACCESS_DUPLEX
+                FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003),
+                // dwPipeMode: needs NAMED_PIPE_MODE typed wrapper
+                NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0),
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
                 BUFFER_SIZE,
@@ -332,7 +320,7 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             let pipe_handle = match pipe_handle_res {
                 Ok(h) => h,
                 Err(e) => {
-                    Logging::error(&format!("[ERROR] Failed to create scan request pipe: {:?}, GetLastError={:?}", e, GetLastError()));
+                    Logging::error(&format!("Failed to create scan request pipe: {:?}, GetLastError={:?}", e, GetLastError()));
                     thread::sleep(Duration::from_secs(5));
                     continue;
                 }
@@ -344,7 +332,7 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             let handle_connection = |pipe_handle: HANDLE| {
                 if let Some(request) = read_scan_request(pipe_handle) {
                     if let Err(e) = tx.send(request) {
-                        Logging::error(&format!("[ERROR] Failed to forward scan request: {}", e));
+                        Logging::error(&format!("Failed to forward scan request: {}", e));
                     }
                 }
                 
@@ -355,15 +343,13 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             };
             
             if connected.as_bool() {
-                Logging::info("[DIAG] ConnectNamedPipe returned true for scan listener");
                 handle_connection(pipe_handle);
             } else {
                 let last_error = GetLastError();
                 if last_error == ERROR_PIPE_CONNECTED {
-                    Logging::info("[DIAG] ConnectNamedPipe - ERROR_PIPE_CONNECTED (treating as connected)");
                     handle_connection(pipe_handle);
                 } else {
-                    Logging::error(&format!("[ERROR] ConnectNamedPipe failed on scan request listener: {:?}", last_error));
+                    Logging::error(&format!("ConnectNamedPipe failed on scan request listener: {:?}", last_error));
                     let _ = CloseHandle(pipe_handle);
                     thread::sleep(Duration::from_millis(100));
                 }
@@ -373,14 +359,14 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
 }
 
 fn threat_event_server_loop() {
-    Logging::info(&format!("[INFO] Starting threat event listener (Pipe 1) on: {}", PIPE_AV_TO_EDR));
+    Logging::novelty(&format!("Starting threat event listener (Pipe 1) on: {}", PIPE_AV_TO_EDR));
 
     loop {
         unsafe {
             let pipe_name_c = match CString::new(PIPE_AV_TO_EDR) {
                 Ok(s) => s,
                 Err(e) => {
-                    Logging::error(&format!("[ERROR] Invalid pipe name for threat listener: {}", e));
+                    Logging::error(&format!("Invalid pipe name for threat listener: {}", e));
                     thread::sleep(Duration::from_secs(5));
                     continue;
                 }
@@ -389,8 +375,8 @@ fn threat_event_server_loop() {
             let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
             let pipe_handle_res = CreateNamedPipeA(
                 pcstr,
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0,
+                FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003),
+                NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0),
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
                 BUFFER_SIZE,
@@ -401,7 +387,7 @@ fn threat_event_server_loop() {
             let pipe_handle = match pipe_handle_res {
                 Ok(h) => h,
                 Err(e) => {
-                    Logging::error(&format!("[ERROR] Failed to create threat event pipe: {:?}, GetLastError={:?}", e, GetLastError()));
+                    Logging::error(&format!("Failed to create threat event pipe: {:?}, GetLastError={:?}", e, GetLastError()));
                     thread::sleep(Duration::from_secs(5));
                     continue;
                 }
@@ -410,10 +396,9 @@ fn threat_event_server_loop() {
             let connected: BOOL = ConnectNamedPipe(pipe_handle, None);
 
             if connected.as_bool() || GetLastError() == ERROR_PIPE_CONNECTED {
-                Logging::info("[DIAG] threat_event_server_loop: client connected, handling connection");
                 handle_threat_connection(pipe_handle);
             } else {
-                Logging::error("[ERROR] ConnectNamedPipe failed on threat listener");
+                Logging::error("ConnectNamedPipe failed on threat listener");
                 let _ = CloseHandle(pipe_handle);
                 thread::sleep(Duration::from_millis(100));
             }
@@ -436,10 +421,10 @@ fn handle_threat_connection(pipe_handle: HANDLE) {
 
         if result.as_bool() && bytes_read > 0 {
             let data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
-            Logging::info(&format!("[INFO] Received threat event: {}", data));
+            Logging::novelty(&format!("Received threat event: {}", data));
             // optionally process event here
         } else {
-            Logging::warning("[WARN] ReadFile returned no data for threat connection or failed");
+            Logging::warning("ReadFile returned no data for threat connection or failed");
         }
 
         let _ = FlushFileBuffers(pipe_handle);
@@ -464,14 +449,14 @@ fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
         );
 
         if !result.as_bool() || bytes_read == 0 {
-            Logging::warning("[WARN] read_scan_request: ReadFile failed or returned 0 bytes");
+            Logging::warning("read_scan_request: ReadFile failed or returned 0 bytes");
             return None;
         }
 
         let data = match std::str::from_utf8(&buffer[..bytes_read as usize]) {
             Ok(s) => s,
             Err(e) => {
-                Logging::error(&format!("[ERROR] Invalid UTF-8 in scan request: {}", e));
+                Logging::error(&format!("Invalid UTF-8 in scan request: {}", e));
                 return None;
             }
         };
@@ -479,8 +464,8 @@ fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
         match serde_json::from_str::<EDRScanRequest>(data) {
             Ok(request) => Some(request),
             Err(e) => {
-                Logging::error(&format!("[ERROR] Failed to parse scan request JSON: {}", e));
-                Logging::error(&format!("[ERROR] Data received: {}", data));
+                Logging::error(&format!("Failed to parse scan request JSON: {}", e));
+                Logging::error(&format!("Data received: {}", data));
                 None
             }
         }
