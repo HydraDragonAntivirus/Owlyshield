@@ -30,7 +30,7 @@ const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
 
-const CONNECT_TIMEOUT_MS: u32 = 300_000;
+const CONNECT_TIMEOUT_MS: u32 = 600_000;
 
 /// Event sent FROM HydraDragon AV TO Owlyshield EDR
 #[derive(Debug, Clone, Deserialize, Serialize)]
