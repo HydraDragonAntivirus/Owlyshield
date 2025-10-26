@@ -151,11 +151,6 @@ impl AVIntegration {
     }
 }
 
-fn log_get_last_error_context(context: &str) {
-    let last = unsafe { GetLastError() };
-    Logging::error(&format!("{} - GetLastError={:?}", context, last));
-}
-
 /// AV -> EDR client (one-shot): connect to AV->EDR pipe and write threat event
 fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     unsafe {
