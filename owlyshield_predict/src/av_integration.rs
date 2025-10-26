@@ -8,15 +8,17 @@ use std::time::Duration;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use windows::core::PCSTR;
-use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL, ERROR_IO_PENDING, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Storage::FileSystem::{
     CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
-    FILE_SHARE_NONE, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES,
+    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, NAMED_PIPE_MODE,
 };
+use windows::Win32::System::IO::OVERLAPPED;
+use windows::Win32::System::Threading::{CreateEventA, WaitForSingleObject};
 
 use crate::IOMessage;
 use crate::process::ProcessRecord;
@@ -251,6 +253,21 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
     Logging::novelty(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
 
+    fn handle_connection(pipe_handle: HANDLE, tx: &Sender<EDRScanRequest>) {
+        // read_scan_request will return Option<EDRScanRequest>; forward if present
+        if let Some(request) = read_scan_request(pipe_handle) {
+            if let Err(e) = tx.send(request) {
+                Logging::error(&format!("Failed to forward scan request: {}", e));
+            }
+        }
+
+        unsafe {
+            let _ = FlushFileBuffers(pipe_handle);
+            let _ = DisconnectNamedPipe(pipe_handle);
+            let _ = CloseHandle(pipe_handle);
+        }
+    }
+
     loop {
         unsafe {
             let pipe_name_c = match CString::new(PIPE_EDR_TO_AV) {
@@ -264,23 +281,25 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
 
             let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
 
-            // CORRECT: use PIPE_ACCESS_DUPLEX (or PIPE_ACCESS_INBOUND) and optionally FILE_FLAG_OVERLAPPED
-            // e.g. PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 — the exact expression depends on the wrapper types
-            // Here I show the idea; adapt to the windows crate syntax you're using:
-            let open_mode = windows::Win32::System::Pipes::PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 as u32;
+            // Build the open mode as a raw u32 using the constants, then wrap into the expected
+            // FILE_FLAGS_AND_ATTRIBUTES type when calling CreateNamedPipeA.
+            let open_mode_bits: u32 = PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 as u32;
+            let open_mode = windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(open_mode_bits);
 
-            let pipe_handle_res = CreateNamedPipeA(
+            // Pipe mode (message, message-readmode, wait) - keep the existing NAMED_PIPE_MODE wrapper
+            let pipe_mode = NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0);
+
+            // CreateNamedPipeA returns Result<HANDLE, Error> — unwrap (match) to get the HANDLE.
+            let pipe_handle = match CreateNamedPipeA(
                 pcstr,
-                windows::Win32::System::Pipes::PIPE_ACCESS_DUPLEX, // server open mode
-                NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0), // pipe mode
+                open_mode,
+                pipe_mode,
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
                 BUFFER_SIZE,
                 0,
                 None,
-            );
-
-            let pipe_handle = match pipe_handle_res {
+            ) {
                 Ok(h) => h,
                 Err(e) => {
                     Logging::error(&format!("Failed to create scan request pipe: {:?}, GetLastError={:?}", e, GetLastError()));
@@ -290,32 +309,48 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             };
 
             // Create an event for overlapped ConnectNamedPipe
-            let event = CreateEventA(None, BOOL(0), BOOL(0), None);
+            let event = match CreateEventA(None, BOOL(0), BOOL(0), None) {
+                Ok(h) => h,
+                Err(e) => {
+                    Logging::error(&format!("CreateEventA failed: {:?}", e));
+                    let _ = CloseHandle(pipe_handle);
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+            };
+
+            // Check the HANDLE for invalidness
             if event.is_invalid() {
-                Logging::error("CreateEventA failed for overlapped ConnectNamedPipe");
+                Logging::error("CreateEventA returned invalid handle");
                 let _ = CloseHandle(pipe_handle);
                 thread::sleep(Duration::from_millis(100));
                 continue;
             }
 
-            // Prepare OVERLAPPED with the event handle
+            // Prepare OVERLAPPED and set hEvent appropriately.
             let mut overlapped: OVERLAPPED = std::mem::zeroed();
-            overlapped.hEvent = event.0 as isize; // set hEvent (adapt if your wrapper differs)
 
-            // Try overlapped ConnectNamedPipe
-            let connect_ok: BOOL = ConnectNamedPipe(pipe_handle, &mut overlapped);
+            // Depending on windows crate version, hEvent may accept a HANDLE directly or an integer.
+            // If the compiler accepts this, use it:
+            // overlapped.hEvent = event;
+            //
+            // If compiler complains about types, use the numeric field:
+            overlapped.hEvent = event; // event is a HANDLE (from CreateEventA Ok(h)), assign it directly
+
+            // Call ConnectNamedPipe with an Option<*mut OVERLAPPED>
+            let connect_ok: BOOL = ConnectNamedPipe(pipe_handle, Some(&mut overlapped as *mut _));
 
             if connect_ok.as_bool() {
                 // immediate connection
-                handle_connection(pipe_handle);
+                handle_connection(pipe_handle, &tx);
             } else {
                 let err = GetLastError();
                 if err == ERROR_IO_PENDING {
-                    // connection is in progress — wait with timeout
+                    // connection in progress — wait with timeout
                     let wait_res = WaitForSingleObject(event, CONNECT_TIMEOUT_MS);
                     if wait_res == WAIT_OBJECT_0 {
-                        // client connected within timeout
-                        handle_connection(pipe_handle);
+                        // client connected
+                        handle_connection(pipe_handle, &tx);
                     } else if wait_res == WAIT_TIMEOUT {
                         Logging::warning("ConnectNamedPipe timed out waiting for client; disconnecting and retrying");
                         let _ = DisconnectNamedPipe(pipe_handle);
@@ -326,8 +361,8 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                         let _ = CloseHandle(pipe_handle);
                     }
                 } else if err == ERROR_PIPE_CONNECTED {
-                    // client connected between CreateNamedPipe and ConnectNamedPipe call
-                    handle_connection(pipe_handle);
+                    // client connected between CreateNamedPipe and ConnectNamedPipe
+                    handle_connection(pipe_handle, &tx);
                 } else {
                     Logging::error(&format!("ConnectNamedPipe failed: {:?}", err));
                     let _ = CloseHandle(pipe_handle);
@@ -336,8 +371,8 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
 
             // cleanup the event handle
             let _ = CloseHandle(event);
-        }
-    }
+        } // end unsafe
+    } // end loop
 }
 
 /// Read and parse a scan request from the pipe
