@@ -20,7 +20,7 @@ use windows::Win32::System::Pipes::{
 
 use crate::IOMessage;
 use crate::process::ProcessRecord;
-use crate::logging::Logging; // <-- your logging module
+use crate::logging::Logging;
 
 // Pipe 1: AV sends threat events TO EDR (Owlyshield receives)
 const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
@@ -68,8 +68,10 @@ pub struct AVScanResponse {
 
 /// AVIntegration manages both named pipes for bidirectional communication
 pub struct AVIntegration {
-    // Receiver for incoming scan requests from EDR
+    // Receiver for incoming scan requests (from EDR or internal)
     scan_request_rx: Receiver<EDRScanRequest>,
+    // ** CHANGED: Added sender for internal events **
+    internal_scan_tx: Sender<EDRScanRequest>, 
     // Handle for the scan request listener thread
     _scan_request_handle: thread::JoinHandle<()>,
 }
@@ -77,11 +79,15 @@ pub struct AVIntegration {
 impl AVIntegration {
     /// Create a new AVIntegration with both pipes
     pub fn new() -> Self {
-        // Channel for receiving scan requests FROM EDR
+        // Channel for receiving scan requests
         let (scan_tx, scan_rx) = channel();
+
+        // ** CHANGED: Clone the sender for internal use **
+        let internal_tx = scan_tx.clone();
 
         // Start the scan request listener (Pipe 2: EDR → AV)
         // This is the SERVER side, which is correct for the AV.
+        // ** CHANGED: Move the original 'scan_tx' into the thread **
         let scan_handle = thread::spawn(move || {
             scan_request_server_loop(scan_tx);
         });
@@ -89,18 +95,20 @@ impl AVIntegration {
 
         AVIntegration {
             scan_request_rx: scan_rx,
+            // ** CHANGED: Store the cloned sender **
+            internal_scan_tx: internal_tx,
             _scan_request_handle: scan_handle,
         }
     }
 
     /// Send a threat event TO Owlyshield EDR (Pipe 1: AV → EDR)
-    /// This is called by HydraDragon when it detects malware
+    /// This is the CLIENT role for Pipe 1. This function is correct.
     pub fn send_threat_event(&self, event: AVThreatEvent) -> Result<(), String> {
         send_threat_to_edr(event)
     }
 
     /// Poll for scan requests FROM Owlyshield EDR (Pipe 2: EDR → AV)
-    /// Returns a list of files that the EDR wants scanned
+    /// This function is correct. It pulls from the channel.
     pub fn poll_scan_requests(&mut self) -> Vec<EDRScanRequest> {
         let mut requests = Vec::new();
         
@@ -109,7 +117,7 @@ impl AVIntegration {
                 Ok(request) => {
                     // use existing logging methods (warning/error/novelty/alert) as appropriate
                     Logging::novelty(&format!(
-                        "Received scan request from EDR: {} ({})",
+                        "Received scan request: {} ({})",
                         request.file_path, request.event_type
                     ));
                     requests.push(request);
@@ -126,7 +134,7 @@ impl AVIntegration {
     }
 
     /// Send a scan response back TO Owlyshield EDR
-    /// This is called after HydraDragon completes a scan requested by the EDR
+    /// This is correct. It just re-uses the CLIENT function for Pipe 1.
     pub fn send_scan_response(&self, response: AVScanResponse) -> Result<(), String> {
         // For now, we'll send this as a special threat event
         let event = AVThreatEvent {
@@ -143,7 +151,8 @@ impl AVIntegration {
         self.send_threat_event(event)
     }
     
-    /// RESTORED: Queue a file event to be scanned by HydraDragon AV
+    /// **CHANGED: This function is now logical and correct.**
+    /// Queue a file event to be scanned by HydraDragon AV
     /// This function is called by add_irp_record
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, precord: &ProcessRecord) {
         let request = EDRScanRequest {
@@ -154,8 +163,11 @@ impl AVIntegration {
             additional_context: Some(format!("Event triggered by GID: {}", precord.gid)),
         };
 
-        if let Err(e) = send_scan_request_to_av(request) {
-            Logging::error(&format!("Failed to send scan request to AV: {}", e));
+        // ** THE FIX: **
+        // Instead of calling 'send_scan_request_to_av' (client),
+        // we send the message *internally* through the channel.
+        if let Err(e) = self.internal_scan_tx.send(request) {
+            Logging::error(&format!("Failed to send internal scan request: {}", e));
         }
     }
 }
@@ -166,7 +178,7 @@ fn log_get_last_error_context(context: &str) {
 }
 
 /// Pipe 1 Client: Send threat events TO EDR (one-shot connection per event)
-/// This function remains, as it's the correct role for the AV (sender/client).
+/// This is the AV's CLIENT role. It is correct.
 fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     unsafe {
         // Use CString to ensure lifetime of the pointer passed into the WinAPI call
@@ -230,67 +242,15 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     }
 }
 
-/// RESTORED: Pipe 2 Client: Send a scan request TO AV (one-shot connection per request)
-/// This is used by queue_file_event to send a message to its *own* server loop.
-fn send_scan_request_to_av(request: EDRScanRequest) -> Result<(), String> {
-    unsafe {
-        let pipe_name_c = CString::new(PIPE_EDR_TO_AV).map_err(|e| format!("Invalid pipe name: {}", e))?;
-        let pipe_handle_res = CreateFileA(
-            PCSTR(pipe_name_c.as_ptr() as *const u8),
-            FILE_GENERIC_WRITE.0,
-            FILE_SHARE_NONE,
-            None,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            HANDLE::default(),
-        );
 
-        let pipe_handle = match pipe_handle_res {
-            Ok(h) => h,
-            Err(e) => {
-                let last = GetLastError();
-                Logging::error(&format!("Failed to connect to AV pipe for scan request: {:?}, GetLastError={:?}", e, last));
-                return Err(format!("Failed to connect to AV pipe for scan request: {:?}, GetLastError={:?}", e, last));
-            }
-        };
 
-        let message = match serde_json::to_string(&request) {
-            Ok(m) => m,
-            Err(e) => {
-                Logging::error(&format!("Failed to serialize scan request: {}", e));
-                return Err(format!("Failed to serialize scan request: {}", e));
-            }
-        };
-        let message_bytes = message.as_bytes();
-
-        let mut bytes_written = 0u32;
-        let result = WriteFile(
-            pipe_handle,
-            Some(message_bytes),
-            Some(&mut bytes_written),
-            None,
-        );
-        
-        let _ = FlushFileBuffers(pipe_handle);
-        let _ = CloseHandle(pipe_handle);
-
-        if !result.as_bool() {
-            Logging::error("Failed to write scan request to AV pipe");
-            return Err("Failed to write scan request to AV pipe".to_string());
-        }
-        Logging::novelty(&format!("Sent scan request to AV: {} ({} bytes)", request.file_path, bytes_written));
-        Ok(())
-    }
-}
-
-/// RESTORED: Pipe 2 Server: Receive scan requests FROM EDR (persistent listener)
-/// This is the correct server-side implementation for the AV.
+/// Pipe 2 Server: Receive scan requests FROM EDR (persistent listener)
+/// This is the AV's SERVER role. It is correct.
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
     Logging::novelty(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
     
     loop {
         unsafe {
-            // Create the named pipe to RECEIVE requests from EDR
             let pipe_name_c = match CString::new(PIPE_EDR_TO_AV) {
                 Ok(s) => s,
                 Err(e) => {
@@ -303,9 +263,8 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
             let pipe_handle_res = CreateNamedPipeA(
                 pcstr,
-                // dwOpenMode: FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003) == numeric PIPE_ACCESS_DUPLEX
-                FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003),
-                // dwPipeMode: needs NAMED_PIPE_MODE typed wrapper
+                // Using Duplex access, which is fine.
+                FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003), 
                 NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0),
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
@@ -327,7 +286,9 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             let connected: BOOL = ConnectNamedPipe(pipe_handle, None);
 
             let handle_connection = |pipe_handle: HANDLE| {
+                // This 'read_scan_request' function reads from the EDR
                 if let Some(request) = read_scan_request(pipe_handle) {
+                    // This 'tx.send' forwards it to the main AV loop
                     if let Err(e) = tx.send(request) {
                         Logging::error(&format!("Failed to forward scan request: {}", e));
                     }
@@ -355,25 +316,19 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
     }
 }
 
-
-// REMOVED: threat_event_server_loop
-// REMOVED: handle_threat_connection
-// The AV does not listen on the threat pipe, it only writes.
-
 /// Read and parse a scan request from the pipe
-/// This helper function is still valid, as it just reads from a given handle.
+/// This helper function is correct.
 fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
     unsafe {
         let mut buffer = vec![0u8; BUFFER_SIZE as usize];
         let mut bytes_read: u32 = 0;
 
-        // Correct ReadFile signature for windows = "0.48.0"
         let result: BOOL = ReadFile(
             pipe_handle,
-            Some(buffer.as_mut_ptr() as *mut _), // lpBuffer
-            buffer.len() as u32,                 // nNumberOfBytesToRead
-            Some(&mut bytes_read as *mut u32),   // lpNumberOfBytesRead
-            None,                                // lpOverlapped
+            Some(buffer.as_mut_ptr() as *mut _),
+            buffer.len() as u32,
+            Some(&mut bytes_read as *mut u32), 
+            None,
         );
 
         if !result.as_bool() || bytes_read == 0 {
