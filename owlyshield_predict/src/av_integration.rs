@@ -162,9 +162,10 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
         let pipe_name_c = CString::new(PIPE_AV_TO_EDR).map_err(|e| format!("Invalid pipe name: {}", e))?;
         event.action_required = "kill_and_remove".to_string();
 
+        // NOTE: pass the underlying .0 integer for FILE_GENERIC_WRITE
         let pipe_handle_res = CreateFileA(
             PCSTR(pipe_name_c.as_ptr() as *const u8),
-            FILE_GENERIC_WRITE,
+            FILE_GENERIC_WRITE.0, // <-- use .0 here
             FILE_SHARE_NONE,
             None,
             OPEN_EXISTING,
