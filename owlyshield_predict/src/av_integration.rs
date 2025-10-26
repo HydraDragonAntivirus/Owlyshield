@@ -8,10 +8,13 @@ use std::time::Duration;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use windows::core::PCSTR;
-use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL, ERROR_IO_PENDING, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL, ERROR_IO_PENDING, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
+};
 use windows::Win32::Storage::FileSystem::{
     CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
-    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED
+    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
@@ -31,8 +34,7 @@ const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
 const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
-
-const CONNECT_TIMEOUT_MS: u32 = 600_000;
+const CONNECT_TIMEOUT_MS: u32 = 600_000; // 10 minutes; tune as needed
 
 /// Event sent FROM HydraDragon AV TO Owlyshield EDR
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -75,7 +77,7 @@ pub struct AVIntegration {
     // Receiver for incoming scan requests (from EDR or internal)
     scan_request_rx: Receiver<EDRScanRequest>,
     // ** CHANGED: Added sender for internal events **
-    internal_scan_tx: Sender<EDRScanRequest>, 
+    internal_scan_tx: Sender<EDRScanRequest>,
     // Handle for the scan request listener thread
     _scan_request_handle: thread::JoinHandle<()>,
 }
@@ -91,35 +93,29 @@ impl AVIntegration {
 
         // Start the scan request listener (Pipe 2: EDR → AV)
         // This is the SERVER side, which is correct for the AV.
-        // ** CHANGED: Move the original 'scan_tx' into the thread **
         let scan_handle = thread::spawn(move || {
             scan_request_server_loop(scan_tx);
         });
 
-
         AVIntegration {
             scan_request_rx: scan_rx,
-            // ** CHANGED: Store the cloned sender **
             internal_scan_tx: internal_tx,
             _scan_request_handle: scan_handle,
         }
     }
 
     /// Send a threat event TO Owlyshield EDR (Pipe 1: AV → EDR)
-    /// This is the CLIENT role for Pipe 1. This function is correct.
     pub fn send_threat_event(&self, event: AVThreatEvent) -> Result<(), String> {
         send_threat_to_edr(event)
     }
 
     /// Poll for scan requests FROM Owlyshield EDR (Pipe 2: EDR → AV)
-    /// This function is correct. It pulls from the channel.
     pub fn poll_scan_requests(&mut self) -> Vec<EDRScanRequest> {
         let mut requests = Vec::new();
-        
+
         loop {
             match self.scan_request_rx.try_recv() {
                 Ok(request) => {
-                    // use existing logging methods (warning/error/novelty/alert) as appropriate
                     Logging::novelty(&format!(
                         "Received scan request: {} ({})",
                         request.file_path, request.event_type
@@ -133,14 +129,12 @@ impl AVIntegration {
                 }
             }
         }
-        
+
         requests
     }
 
     /// Send a scan response back TO Owlyshield EDR
-    /// This is correct. It just re-uses the CLIENT function for Pipe 1.
     pub fn send_scan_response(&self, response: AVScanResponse) -> Result<(), String> {
-        // For now, we'll send this as a special threat event
         let event = AVThreatEvent {
             timestamp: response.scan_timestamp,
             file_path: response.file_path,
@@ -151,13 +145,11 @@ impl AVIntegration {
             pid: None,
             gid: None,
         };
-        
+
         self.send_threat_event(event)
     }
-    
-    /// **CHANGED: This function is now logical and correct.**
+
     /// Queue a file event to be scanned by HydraDragon AV
-    /// This function is called by add_irp_record
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, precord: &ProcessRecord) {
         let request = EDRScanRequest {
             event_type: "NEW_IO_EVENT".to_string(),
@@ -167,9 +159,6 @@ impl AVIntegration {
             additional_context: Some(format!("Event triggered by GID: {}", precord.gid)),
         };
 
-        // ** THE FIX: **
-        // Instead of calling 'send_scan_request_to_av' (client),
-        // we send the message *internally* through the channel.
         if let Err(e) = self.internal_scan_tx.send(request) {
             Logging::error(&format!("Failed to send internal scan request: {}", e));
         }
@@ -182,10 +171,8 @@ fn log_get_last_error_context(context: &str) {
 }
 
 /// Pipe 1 Client: Send threat events TO EDR (one-shot connection per event)
-/// This is the AV's CLIENT role. It is correct.
 fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     unsafe {
-        // Use CString to ensure lifetime of the pointer passed into the WinAPI call
         let pipe_name_c = CString::new(PIPE_AV_TO_EDR).map_err(|e| format!("Invalid pipe name: {}", e))?;
 
         // enforce kill_and_remove policy
@@ -209,7 +196,7 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
                 return Err(format!("Failed to connect to EDR pipe: {:?}, GetLastError={:?}", e, last));
             }
         };
-        
+
         // Serialize and send the event
         let message = match serde_json::to_string(&event) {
             Ok(m) => m,
@@ -219,7 +206,7 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
             }
         };
         let message_bytes = message.as_bytes();
-        
+
         let mut bytes_written = 0u32;
         let result = WriteFile(
             pipe_handle,
@@ -236,25 +223,20 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
             return Err("Failed to write to EDR pipe".to_string());
         }
 
-        // success: use novelty (or another existing level) to note the event
         Logging::novelty(&format!(
             "Successfully sent threat event to EDR: {} - {} ({} bytes)",
             event.file_path, event.virus_name, bytes_written
         ));
-        
+
         Ok(())
     }
 }
 
-
-
 /// Pipe 2 Server: Receive scan requests FROM EDR (persistent listener)
-/// This is the AV's SERVER role. It is correct.
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
     Logging::novelty(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
 
     fn handle_connection(pipe_handle: HANDLE, tx: &Sender<EDRScanRequest>) {
-        // read_scan_request will return Option<EDRScanRequest>; forward if present
         if let Some(request) = read_scan_request(pipe_handle) {
             if let Err(e) = tx.send(request) {
                 Logging::error(&format!("Failed to forward scan request: {}", e));
@@ -281,12 +263,10 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
 
             let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
 
-            // Build the open mode as a raw u32 using the constants, then wrap into the expected
-            // FILE_FLAGS_AND_ATTRIBUTES type when calling CreateNamedPipeA.
+            // Build open mode and wrap into FILE_FLAGS_AND_ATTRIBUTES expected by CreateNamedPipeA
             let open_mode_bits: u32 = PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 as u32;
             let open_mode = windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(open_mode_bits);
 
-            // Pipe mode (message, message-readmode, wait) - keep the existing NAMED_PIPE_MODE wrapper
             let pipe_mode = NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0);
 
             // CreateNamedPipeA returns Result<HANDLE, Error> — unwrap (match) to get the HANDLE.
@@ -319,7 +299,7 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 }
             };
 
-            // Check the HANDLE for invalidness
+            // Defensive: check the HANDLE (should be valid)
             if event.is_invalid() {
                 Logging::error("CreateEventA returned invalid handle");
                 let _ = CloseHandle(pipe_handle);
@@ -327,15 +307,9 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 continue;
             }
 
-            // Prepare OVERLAPPED and set hEvent appropriately.
+            // Prepare OVERLAPPED and set hEvent to the HANDLE
             let mut overlapped: OVERLAPPED = std::mem::zeroed();
-
-            // Depending on windows crate version, hEvent may accept a HANDLE directly or an integer.
-            // If the compiler accepts this, use it:
-            // overlapped.hEvent = event;
-            //
-            // If compiler complains about types, use the numeric field:
-            overlapped.hEvent = event; // event is a HANDLE (from CreateEventA Ok(h)), assign it directly
+            overlapped.hEvent = event;
 
             // Call ConnectNamedPipe with an Option<*mut OVERLAPPED>
             let connect_ok: BOOL = ConnectNamedPipe(pipe_handle, Some(&mut overlapped as *mut _));
@@ -376,7 +350,6 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
 }
 
 /// Read and parse a scan request from the pipe
-/// This helper function is correct.
 fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
     unsafe {
         let mut buffer = vec![0u8; BUFFER_SIZE as usize];
@@ -386,7 +359,7 @@ fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
             pipe_handle,
             Some(buffer.as_mut_ptr() as *mut _),
             buffer.len() as u32,
-            Some(&mut bytes_read as *mut u32), 
+            Some(&mut bytes_read as *mut u32),
             None,
         );
 
