@@ -8,13 +8,14 @@ use std::time::Duration;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use windows::core::PCSTR;
+
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL, ERROR_IO_PENDING, WAIT_OBJECT_0,
     WAIT_TIMEOUT,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
-    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED,
+    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
@@ -27,34 +28,32 @@ use crate::IOMessage;
 use crate::process::ProcessRecord;
 use crate::logging::Logging;
 
-// Pipe 1: AV sends threat events TO EDR (Owlyshield receives)
+// --- Pipe names (single source of truth) ---
 const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
-
-// Pipe 2: EDR sends scan requests TO AV (HydraDragon receives)
 const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
-const CONNECT_TIMEOUT_MS: u32 = 600_000; // 10 minutes; tune as needed
+const CONNECT_TIMEOUT_MS: u32 = 30_000; // 30s - adjust as needed
 
-/// Event sent FROM HydraDragon AV TO Owlyshield EDR
+/// AV -> EDR event
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AVThreatEvent {
     pub timestamp: String,
     pub file_path: String,
     pub virus_name: String,
     pub is_malicious: bool,
-    pub detection_type: String,  // "signature", "behavioral", "heuristic"
-    pub action_required: String, // "kill_and_remove"
+    pub detection_type: String,
+    pub action_required: String,
     #[serde(default)]
     pub pid: Option<u32>,
     #[serde(default)]
     pub gid: Option<u64>,
 }
 
-/// Request sent FROM Owlyshield EDR TO HydraDragon AV
+/// EDR -> AV request
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EDRScanRequest {
-    pub event_type: String,      // "NEW_IO_EVENT", "SUSPICIOUS_ACTIVITY"
+    pub event_type: String,
     pub file_path: String,
     pub timestamp: String,
     #[serde(default)]
@@ -63,7 +62,7 @@ pub struct EDRScanRequest {
     pub additional_context: Option<String>,
 }
 
-/// Response sent FROM HydraDragon AV back TO Owlyshield EDR
+/// AV scan response (sent to EDR as a threat event)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AVScanResponse {
     pub file_path: String,
@@ -72,27 +71,19 @@ pub struct AVScanResponse {
     pub scan_timestamp: String,
 }
 
-/// AVIntegration manages both named pipes for bidirectional communication
+/// Integration struct — keeps internal channel & listener thread
 pub struct AVIntegration {
-    // Receiver for incoming scan requests (from EDR or internal)
     scan_request_rx: Receiver<EDRScanRequest>,
-    // ** CHANGED: Added sender for internal events **
     internal_scan_tx: Sender<EDRScanRequest>,
-    // Handle for the scan request listener thread
     _scan_request_handle: thread::JoinHandle<()>,
 }
 
 impl AVIntegration {
-    /// Create a new AVIntegration with both pipes
     pub fn new() -> Self {
-        // Channel for receiving scan requests
         let (scan_tx, scan_rx) = channel();
-
-        // ** CHANGED: Clone the sender for internal use **
         let internal_tx = scan_tx.clone();
 
-        // Start the scan request listener (Pipe 2: EDR → AV)
-        // This is the SERVER side, which is correct for the AV.
+        // Server thread: persistent listener for EDR -> AV requests
         let scan_handle = thread::spawn(move || {
             scan_request_server_loop(scan_tx);
         });
@@ -104,15 +95,12 @@ impl AVIntegration {
         }
     }
 
-    /// Send a threat event TO Owlyshield EDR (Pipe 1: AV → EDR)
     pub fn send_threat_event(&self, event: AVThreatEvent) -> Result<(), String> {
         send_threat_to_edr(event)
     }
 
-    /// Poll for scan requests FROM Owlyshield EDR (Pipe 2: EDR → AV)
     pub fn poll_scan_requests(&mut self) -> Vec<EDRScanRequest> {
         let mut requests = Vec::new();
-
         loop {
             match self.scan_request_rx.try_recv() {
                 Ok(request) => {
@@ -129,12 +117,11 @@ impl AVIntegration {
                 }
             }
         }
-
         requests
     }
 
-    /// Send a scan response back TO Owlyshield EDR
     pub fn send_scan_response(&self, response: AVScanResponse) -> Result<(), String> {
+        // repackage as threat event and send to EDR (client role)
         let event = AVThreatEvent {
             timestamp: response.scan_timestamp,
             file_path: response.file_path,
@@ -145,11 +132,10 @@ impl AVIntegration {
             pid: None,
             gid: None,
         };
-
         self.send_threat_event(event)
     }
 
-    /// Queue a file event to be scanned by HydraDragon AV
+    /// Called by kernel/event handling to queue internal requests (no external client)
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, precord: &ProcessRecord) {
         let request = EDRScanRequest {
             event_type: "NEW_IO_EVENT".to_string(),
@@ -170,17 +156,15 @@ fn log_get_last_error_context(context: &str) {
     Logging::error(&format!("{} - GetLastError={:?}", context, last));
 }
 
-/// Pipe 1 Client: Send threat events TO EDR (one-shot connection per event)
+/// AV -> EDR client (one-shot): connect to AV->EDR pipe and write threat event
 fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     unsafe {
         let pipe_name_c = CString::new(PIPE_AV_TO_EDR).map_err(|e| format!("Invalid pipe name: {}", e))?;
-
-        // enforce kill_and_remove policy
         event.action_required = "kill_and_remove".to_string();
 
         let pipe_handle_res = CreateFileA(
             PCSTR(pipe_name_c.as_ptr() as *const u8),
-            FILE_GENERIC_WRITE.0,
+            FILE_GENERIC_WRITE,
             FILE_SHARE_NONE,
             None,
             OPEN_EXISTING,
@@ -197,28 +181,20 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
             }
         };
 
-        // Serialize and send the event
-        let message = match serde_json::to_string(&event) {
-            Ok(m) => m,
-            Err(e) => {
-                Logging::error(&format!("Failed to serialize event: {}", e));
-                return Err(format!("Failed to serialize event: {}", e));
-            }
-        };
+        // serialize -> write
+        let message = serde_json::to_string(&event).map_err(|e| {
+            Logging::error(&format!("serialize error: {}", e));
+            format!("serialize error: {}", e)
+        })?;
         let message_bytes = message.as_bytes();
 
         let mut bytes_written = 0u32;
-        let result = WriteFile(
-            pipe_handle,
-            Some(message_bytes),
-            Some(&mut bytes_written),
-            None,
-        );
+        let ok = WriteFile(pipe_handle, Some(message_bytes), Some(&mut bytes_written), None);
 
         let _ = FlushFileBuffers(pipe_handle);
         let _ = CloseHandle(pipe_handle);
 
-        if !result.as_bool() {
+        if !ok.as_bool() {
             Logging::error("Failed to write to EDR pipe");
             return Err("Failed to write to EDR pipe".to_string());
         }
@@ -227,12 +203,13 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
             "Successfully sent threat event to EDR: {} - {} ({} bytes)",
             event.file_path, event.virus_name, bytes_written
         ));
-
         Ok(())
     }
 }
 
-/// Pipe 2 Server: Receive scan requests FROM EDR (persistent listener)
+/// AV server: persistent listener for EDR -> AV scan requests
+/// NOTE: This is the single authoritative server for PIPE_EDR_TO_AV.
+/// The EDR process must be the client that opens that pipe (CreateFileA).
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
     Logging::novelty(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
 
@@ -242,7 +219,6 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 Logging::error(&format!("Failed to forward scan request: {}", e));
             }
         }
-
         unsafe {
             let _ = FlushFileBuffers(pipe_handle);
             let _ = DisconnectNamedPipe(pipe_handle);
@@ -260,16 +236,15 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                     continue;
                 }
             };
-
             let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
 
-            // Build open mode and wrap into FILE_FLAGS_AND_ATTRIBUTES expected by CreateNamedPipeA
+            // Build open-mode bits and wrap into expected FILE_FLAGS_AND_ATTRIBUTES
             let open_mode_bits: u32 = PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 as u32;
-            let open_mode = windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(open_mode_bits);
+            let open_mode = FILE_FLAGS_AND_ATTRIBUTES(open_mode_bits);
 
             let pipe_mode = NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0);
 
-            // CreateNamedPipeA returns Result<HANDLE, Error> — unwrap (match) to get the HANDLE.
+            // Create the named pipe (server)
             let pipe_handle = match CreateNamedPipeA(
                 pcstr,
                 open_mode,
@@ -282,13 +257,13 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             ) {
                 Ok(h) => h,
                 Err(e) => {
-                    Logging::error(&format!("Failed to create scan request pipe: {:?}, GetLastError={:?}", e, GetLastError()));
+                    Logging::error(&format!("CreateNamedPipeA failed: {:?}, GetLastError={:?}", e, GetLastError()));
                     thread::sleep(Duration::from_secs(5));
                     continue;
                 }
             };
 
-            // Create an event for overlapped ConnectNamedPipe
+            // Create event for overlapped ConnectNamedPipe
             let event = match CreateEventA(None, BOOL(0), BOOL(0), None) {
                 Ok(h) => h,
                 Err(e) => {
@@ -299,7 +274,6 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 }
             };
 
-            // Defensive: check the HANDLE (should be valid)
             if event.is_invalid() {
                 Logging::error("CreateEventA returned invalid handle");
                 let _ = CloseHandle(pipe_handle);
@@ -307,30 +281,29 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 continue;
             }
 
-            // Prepare OVERLAPPED and set hEvent to the HANDLE
+            // Setup overlapped and use overlapped ConnectNamedPipe
             let mut overlapped: OVERLAPPED = std::mem::zeroed();
             overlapped.hEvent = event;
 
-            // Call ConnectNamedPipe with an Option<*mut OVERLAPPED>
             let connect_ok: BOOL = ConnectNamedPipe(pipe_handle, Some(&mut overlapped as *mut _));
 
             if connect_ok.as_bool() {
-                // immediate connection
+                // immediate connection (rare)
                 handle_connection(pipe_handle, &tx);
             } else {
                 let err = GetLastError();
                 if err == ERROR_IO_PENDING {
-                    // connection in progress — wait with timeout
+                    // Wait for event with timeout
                     let wait_res = WaitForSingleObject(event, CONNECT_TIMEOUT_MS);
                     if wait_res == WAIT_OBJECT_0 {
-                        // client connected
+                        // connected
                         handle_connection(pipe_handle, &tx);
                     } else if wait_res == WAIT_TIMEOUT {
                         Logging::warning("ConnectNamedPipe timed out waiting for client; disconnecting and retrying");
                         let _ = DisconnectNamedPipe(pipe_handle);
                         let _ = CloseHandle(pipe_handle);
                     } else {
-                        Logging::error(&format!("WaitForSingleObject returned unexpected: {:?}", wait_res));
+                        Logging::error(&format!("WaitForSingleObject unexpected: {:?}", wait_res));
                         let _ = DisconnectNamedPipe(pipe_handle);
                         let _ = CloseHandle(pipe_handle);
                     }
@@ -343,13 +316,16 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 }
             }
 
-            // cleanup the event handle
+            // cleanup
             let _ = CloseHandle(event);
         } // end unsafe
+
+        // small throttle to avoid busy looping if something is broken
+        thread::sleep(Duration::from_millis(10));
     } // end loop
 }
 
-/// Read and parse a scan request from the pipe
+/// Read & parse a single request from a connected pipe handle
 fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
     unsafe {
         let mut buffer = vec![0u8; BUFFER_SIZE as usize];
