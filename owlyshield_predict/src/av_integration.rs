@@ -11,7 +11,7 @@ use windows::core::PCSTR;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL};
 use windows::Win32::Storage::FileSystem::{
     CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
-    FILE_SHARE_NONE, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ, // Added for client-side read
+    FILE_SHARE_NONE, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
@@ -81,9 +81,9 @@ impl AVIntegration {
         let (scan_tx, scan_rx) = channel();
 
         // Start the scan request listener (Pipe 2: EDR → AV)
-        // This is now a CLIENT loop, as requested.
+        // This is the SERVER side, which is correct for the AV.
         let scan_handle = thread::spawn(move || {
-            scan_request_client_loop(scan_tx);
+            scan_request_server_loop(scan_tx);
         });
 
 
@@ -129,7 +129,6 @@ impl AVIntegration {
     /// This is called after HydraDragon completes a scan requested by the EDR
     pub fn send_scan_response(&self, response: AVScanResponse) -> Result<(), String> {
         // For now, we'll send this as a special threat event
-        // You could create a third pipe if you want separate response handling
         let event = AVThreatEvent {
             timestamp: response.scan_timestamp,
             file_path: response.file_path,
@@ -144,8 +143,21 @@ impl AVIntegration {
         self.send_threat_event(event)
     }
     
-    // REMOVED: queue_file_event
-    // This function was sending a scan request, which is the EDR's responsibility.
+    /// RESTORED: Queue a file event to be scanned by HydraDragon AV
+    /// This function is called by add_irp_record
+    pub fn queue_file_event(&mut self, iomsg: &IOMessage, precord: &ProcessRecord) {
+        let request = EDRScanRequest {
+            event_type: "NEW_IO_EVENT".to_string(),
+            file_path: precord.exepath.to_string_lossy().to_string(),
+            timestamp: Utc::now().to_rfc3339(),
+            pid: Some(iomsg.pid),
+            additional_context: Some(format!("Event triggered by GID: {}", precord.gid)),
+        };
+
+        if let Err(e) = send_scan_request_to_av(request) {
+            Logging::error(&format!("Failed to send scan request to AV: {}", e));
+        }
+    }
 }
 
 fn log_get_last_error_context(context: &str) {
@@ -165,7 +177,7 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
 
         let pipe_handle_res = CreateFileA(
             PCSTR(pipe_name_c.as_ptr() as *const u8),
-            FILE_GENERIC_WRITE.0, // AV writes to this pipe
+            FILE_GENERIC_WRITE.0,
             FILE_SHARE_NONE,
             None,
             OPEN_EXISTING,
@@ -218,65 +230,127 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     }
 }
 
-// REMOVED: send_scan_request_to_av
-// This is the client-side *sender* for scan requests.
-// This logic belongs in the EDR codebase, not the AV.
+/// RESTORED: Pipe 2 Client: Send a scan request TO AV (one-shot connection per request)
+/// This is used by queue_file_event to send a message to its *own* server loop.
+fn send_scan_request_to_av(request: EDRScanRequest) -> Result<(), String> {
+    unsafe {
+        let pipe_name_c = CString::new(PIPE_EDR_TO_AV).map_err(|e| format!("Invalid pipe name: {}", e))?;
+        let pipe_handle_res = CreateFileA(
+            PCSTR(pipe_name_c.as_ptr() as *const u8),
+            FILE_GENERIC_WRITE.0,
+            FILE_SHARE_NONE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            HANDLE::default(),
+        );
 
-// REMOVED: scan_request_server_loop
-// This was the server-side *receiver* for scan requests.
-// Per the request, the AV is now a client, so this is removed.
+        let pipe_handle = match pipe_handle_res {
+            Ok(h) => h,
+            Err(e) => {
+                let last = GetLastError();
+                Logging::error(&format!("Failed to connect to AV pipe for scan request: {:?}, GetLastError={:?}", e, last));
+                return Err(format!("Failed to connect to AV pipe for scan request: {:?}, GetLastError={:?}", e, last));
+            }
+        };
 
-/// NEW: Pipe 2 Client Receiver: Receive scan requests FROM EDR (persistent listener)
-/// This loop acts as a *client*, connecting to the EDR's *server* pipe.
-fn scan_request_client_loop(tx: Sender<EDRScanRequest>) {
-    Logging::novelty(&format!("Starting scan request client listener for: {}", PIPE_EDR_TO_AV));
+        let message = match serde_json::to_string(&request) {
+            Ok(m) => m,
+            Err(e) => {
+                Logging::error(&format!("Failed to serialize scan request: {}", e));
+                return Err(format!("Failed to serialize scan request: {}", e));
+            }
+        };
+        let message_bytes = message.as_bytes();
+
+        let mut bytes_written = 0u32;
+        let result = WriteFile(
+            pipe_handle,
+            Some(message_bytes),
+            Some(&mut bytes_written),
+            None,
+        );
+        
+        let _ = FlushFileBuffers(pipe_handle);
+        let _ = CloseHandle(pipe_handle);
+
+        if !result.as_bool() {
+            Logging::error("Failed to write scan request to AV pipe");
+            return Err("Failed to write scan request to AV pipe".to_string());
+        }
+        Logging::novelty(&format!("Sent scan request to AV: {} ({} bytes)", request.file_path, bytes_written));
+        Ok(())
+    }
+}
+
+/// RESTORED: Pipe 2 Server: Receive scan requests FROM EDR (persistent listener)
+/// This is the correct server-side implementation for the AV.
+fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
+    Logging::novelty(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
     
     loop {
         unsafe {
+            // Create the named pipe to RECEIVE requests from EDR
             let pipe_name_c = match CString::new(PIPE_EDR_TO_AV) {
                 Ok(s) => s,
                 Err(e) => {
-                    Logging::error(&format!("Invalid pipe name for scan client: {}", e));
+                    Logging::error(&format!("Invalid pipe name for scan listener: {}", e));
                     thread::sleep(Duration::from_secs(5));
                     continue;
                 }
             };
 
-            // Try to connect to the pipe (which is now hosted by the EDR)
-            let pipe_handle_res = CreateFileA(
-                PCSTR(pipe_name_c.as_ptr() as *const u8),
-                FILE_GENERIC_READ.0, // We are a client, but we READ from this pipe
-                FILE_SHARE_NONE,
+            let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
+            let pipe_handle_res = CreateNamedPipeA(
+                pcstr,
+                // dwOpenMode: FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003) == numeric PIPE_ACCESS_DUPLEX
+                FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003),
+                // dwPipeMode: needs NAMED_PIPE_MODE typed wrapper
+                NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0),
+                PIPE_UNLIMITED_INSTANCES,
+                BUFFER_SIZE,
+                BUFFER_SIZE,
+                0,
                 None,
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                HANDLE::default(),
             );
 
             let pipe_handle = match pipe_handle_res {
                 Ok(h) => h,
-                Err(_) => {
-                    // This is not an error, just the EDR's pipe server not being ready
-                    // Logging::warning(&format!("Failed to connect to EDR scan pipe. Retrying..."));
-                    thread::sleep(Duration::from_millis(500)); // Poll gently
+                Err(e) => {
+                    Logging::error(&format!("Failed to create scan request pipe: {:?}, GetLastError={:?}", e, GetLastError()));
+                    thread::sleep(Duration::from_secs(5));
                     continue;
                 }
             };
-            
-            // We are connected. Read the message.
-            // read_scan_request will block until a message is received
-            if let Some(request) = read_scan_request(pipe_handle) {
-                if let Err(e) = tx.send(request) {
-                    Logging::error(&format!("Failed to forward scan request from client loop: {}", e));
+
+            // Wait for EDR to connect
+            let connected: BOOL = ConnectNamedPipe(pipe_handle, None);
+
+            let handle_connection = |pipe_handle: HANDLE| {
+                if let Some(request) = read_scan_request(pipe_handle) {
+                    if let Err(e) = tx.send(request) {
+                        Logging::error(&format!("Failed to forward scan request: {}", e));
+                    }
                 }
-            } else {
-                Logging::warning("read_scan_request failed or EDR pipe disconnected.");
-            }
+                
+                // Disconnect and close
+                let _ = FlushFileBuffers(pipe_handle);
+                let _ = DisconnectNamedPipe(pipe_handle);
+                let _ = CloseHandle(pipe_handle);
+            };
             
-            // Close the handle after the message is read, to allow the EDR server
-            // to accept new connections (if it's not multi-threaded)
-            // or to signal we are done.
-            let _ = CloseHandle(pipe_handle);
+            if connected.as_bool() {
+                handle_connection(pipe_handle);
+            } else {
+                let last_error = GetLastError();
+                if last_error == ERROR_PIPE_CONNECTED {
+                    handle_connection(pipe_handle);
+                } else {
+                    Logging::error(&format!("ConnectNamedPipe failed on scan request listener: {:?}", last_error));
+                    let _ = CloseHandle(pipe_handle);
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
         }
     }
 }
@@ -284,8 +358,7 @@ fn scan_request_client_loop(tx: Sender<EDRScanRequest>) {
 
 // REMOVED: threat_event_server_loop
 // REMOVED: handle_threat_connection
-// This is server-side logic for the AV_TO_EDR pipe.
-// This logic belongs in the EDR codebase.
+// The AV does not listen on the threat pipe, it only writes.
 
 /// Read and parse a scan request from the pipe
 /// This helper function is still valid, as it just reads from a given handle.
@@ -304,8 +377,7 @@ fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
         );
 
         if !result.as_bool() || bytes_read == 0 {
-            // This can happen if the pipe is closed by the server
-            // Logging::warning("read_scan_request: ReadFile failed or returned 0 bytes");
+            Logging::warning("read_scan_request: ReadFile failed or returned 0 bytes");
             return None;
         }
 
