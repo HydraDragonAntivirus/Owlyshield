@@ -20,7 +20,7 @@ use windows::Win32::System::Pipes::{
 
 use crate::IOMessage;
 use crate::process::ProcessRecord;
-use crate::logging::Logging; // <-- your logging module
+use crate::logging::Logging;
 
 // Pipe 1: AV sends threat events TO EDR (Owlyshield receives)
 const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
@@ -149,16 +149,43 @@ impl AVIntegration {
         
         self.send_threat_event(event)
     }
-    
+
     /// Queue a file event to be scanned by HydraDragon AV
     pub fn queue_file_event(&mut self, iomsg: &IOMessage, precord: &ProcessRecord) {
+        // Extract the actual file path from the IO message
+        // The IOMessage should contain the file that was accessed/created/modified
+        let file_path = if let Some(ref path) = iomsg.filepath {
+            path.to_string_lossy().to_string()
+        } else {
+            // Fallback: if no filepath in IOMessage, log error and return
+            Logging::warning(&format!(
+                "No file path in IOMessage for PID {}, cannot queue for AV scan",
+                iomsg.pid
+            ));
+            return;
+        };
+
+        // Build the scan request with the actual file path
         let request = EDRScanRequest {
             event_type: "NEW_IO_EVENT".to_string(),
-            file_path: precord.exepath.to_string_lossy().to_string(),
+            file_path,
             timestamp: Utc::now().to_rfc3339(),
             pid: Some(iomsg.pid),
-            additional_context: Some(format!("Event triggered by GID: {}", precord.gid)),
+            additional_context: Some(format!(
+                "Process: {} (GID: {}), Operation: {:?}",
+                precord.exepath.to_string_lossy(),
+                precord.gid,
+                iomsg.operation // Assuming IOMessage has an operation field
+            )),
         };
+
+        // Log what we're sending
+        Logging::novelty(&format!(
+            "Queuing file for AV scan: {} (triggered by PID: {}, Process: {})",
+            request.file_path,
+            iomsg.pid,
+            precord.exepath.to_string_lossy()
+        ));
 
         if let Err(e) = send_scan_request_to_av(request) {
             Logging::error(&format!("Failed to send scan request to AV: {}", e));
