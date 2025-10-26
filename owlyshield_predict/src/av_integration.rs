@@ -30,6 +30,8 @@ const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
 
+const CONNECT_TIMEOUT_MS: u32 = 300_000;
+
 /// Event sent FROM HydraDragon AV TO Owlyshield EDR
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AVThreatEvent {
@@ -248,7 +250,7 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
 /// This is the AV's SERVER role. It is correct.
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
     Logging::novelty(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
-    
+
     loop {
         unsafe {
             let pipe_name_c = match CString::new(PIPE_EDR_TO_AV) {
@@ -261,11 +263,16 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
             };
 
             let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
+
+            // CORRECT: use PIPE_ACCESS_DUPLEX (or PIPE_ACCESS_INBOUND) and optionally FILE_FLAG_OVERLAPPED
+            // e.g. PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 — the exact expression depends on the wrapper types
+            // Here I show the idea; adapt to the windows crate syntax you're using:
+            let open_mode = windows::Win32::System::Pipes::PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 as u32;
+
             let pipe_handle_res = CreateNamedPipeA(
                 pcstr,
-                // Using Duplex access, which is fine.
-                FILE_FLAGS_AND_ATTRIBUTES(0x0000_0003), 
-                NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0),
+                windows::Win32::System::Pipes::PIPE_ACCESS_DUPLEX, // server open mode
+                NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0), // pipe mode
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
                 BUFFER_SIZE,
@@ -282,36 +289,53 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 }
             };
 
-            // Wait for EDR to connect
-            let connected: BOOL = ConnectNamedPipe(pipe_handle, None);
-
-            let handle_connection = |pipe_handle: HANDLE| {
-                // This 'read_scan_request' function reads from the EDR
-                if let Some(request) = read_scan_request(pipe_handle) {
-                    // This 'tx.send' forwards it to the main AV loop
-                    if let Err(e) = tx.send(request) {
-                        Logging::error(&format!("Failed to forward scan request: {}", e));
-                    }
-                }
-                
-                // Disconnect and close
-                let _ = FlushFileBuffers(pipe_handle);
-                let _ = DisconnectNamedPipe(pipe_handle);
+            // Create an event for overlapped ConnectNamedPipe
+            let event = CreateEventA(None, BOOL(0), BOOL(0), None);
+            if event.is_invalid() {
+                Logging::error("CreateEventA failed for overlapped ConnectNamedPipe");
                 let _ = CloseHandle(pipe_handle);
-            };
-            
-            if connected.as_bool() {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+
+            // Prepare OVERLAPPED with the event handle
+            let mut overlapped: OVERLAPPED = std::mem::zeroed();
+            overlapped.hEvent = event.0 as isize; // set hEvent (adapt if your wrapper differs)
+
+            // Try overlapped ConnectNamedPipe
+            let connect_ok: BOOL = ConnectNamedPipe(pipe_handle, &mut overlapped);
+
+            if connect_ok.as_bool() {
+                // immediate connection
                 handle_connection(pipe_handle);
             } else {
-                let last_error = GetLastError();
-                if last_error == ERROR_PIPE_CONNECTED {
+                let err = GetLastError();
+                if err == ERROR_IO_PENDING {
+                    // connection is in progress — wait with timeout
+                    let wait_res = WaitForSingleObject(event, CONNECT_TIMEOUT_MS);
+                    if wait_res == WAIT_OBJECT_0 {
+                        // client connected within timeout
+                        handle_connection(pipe_handle);
+                    } else if wait_res == WAIT_TIMEOUT {
+                        Logging::warning("ConnectNamedPipe timed out waiting for client; disconnecting and retrying");
+                        let _ = DisconnectNamedPipe(pipe_handle);
+                        let _ = CloseHandle(pipe_handle);
+                    } else {
+                        Logging::error(&format!("WaitForSingleObject returned unexpected: {:?}", wait_res));
+                        let _ = DisconnectNamedPipe(pipe_handle);
+                        let _ = CloseHandle(pipe_handle);
+                    }
+                } else if err == ERROR_PIPE_CONNECTED {
+                    // client connected between CreateNamedPipe and ConnectNamedPipe call
                     handle_connection(pipe_handle);
                 } else {
-                    Logging::error(&format!("ConnectNamedPipe failed on scan request listener: {:?}", last_error));
+                    Logging::error(&format!("ConnectNamedPipe failed: {:?}", err));
                     let _ = CloseHandle(pipe_handle);
-                    thread::sleep(Duration::from_millis(100));
                 }
             }
+
+            // cleanup the event handle
+            let _ = CloseHandle(event);
         }
     }
 }
