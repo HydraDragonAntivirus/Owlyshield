@@ -26,7 +26,7 @@ use crate::logging::Logging;
 const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
 
 // Pipe 2: EDR sends scan requests TO AV (HydraDragon receives)
-const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydragon";
+const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
 
