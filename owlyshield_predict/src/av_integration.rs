@@ -203,122 +203,62 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     }
 }
 
-/// AV server: persistent listener for EDR -> AV scan requests
-/// NOTE: This is the single authoritative server for PIPE_EDR_TO_AV.
-/// The EDR process must be the client that opens that pipe (CreateFileA).
+
+/// AV server: persistent listener for EDR -> AV requests
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
-    Logging::novelty(&format!("Starting scan request listener: {}", PIPE_EDR_TO_AV));
+    Logging::novelty(&format!("Starting pipe server: {}", PIPE_EDR_TO_AV));
 
-    fn handle_connection(pipe_handle: HANDLE, tx: &Sender<EDRScanRequest>) {
-        if let Some(request) = read_scan_request(pipe_handle) {
-            if let Err(e) = tx.send(request) {
-                Logging::error(&format!("Failed to forward scan request: {}", e));
+    unsafe {
+        let pipe_name_c = match CString::new(PIPE_EDR_TO_AV) {
+            Ok(s) => s,
+            Err(e) => {
+                Logging::error(&format!("Invalid pipe name: {}", e));
+                return;
             }
-        }
-        unsafe {
-            let _ = FlushFileBuffers(pipe_handle);
-            let _ = DisconnectNamedPipe(pipe_handle);
-            let _ = CloseHandle(pipe_handle);
-        }
-    }
+        };
 
-    loop {
-        unsafe {
-            let pipe_name_c = match CString::new(PIPE_EDR_TO_AV) {
-                Ok(s) => s,
-                Err(e) => {
-                    Logging::error(&format!("Invalid pipe name for scan listener: {}", e));
-                    thread::sleep(Duration::from_secs(5));
-                    continue;
-                }
-            };
-            let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
-
-            // Build open-mode bits and wrap into expected FILE_FLAGS_AND_ATTRIBUTES
-            let open_mode_bits: u32 = PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 as u32;
-            let open_mode = FILE_FLAGS_AND_ATTRIBUTES(open_mode_bits);
-
-            let pipe_mode = NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE.0 | PIPE_READMODE_MESSAGE.0 | PIPE_WAIT.0);
-
-            // Create the named pipe (server)
-            let pipe_handle = match CreateNamedPipeA(
-                pcstr,
-                open_mode,
-                pipe_mode,
+        loop {
+            let pipe_handle = CreateNamedPipeA(
+                PCSTR(pipe_name_c.as_ptr() as *const u8),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
                 BUFFER_SIZE,
                 0,
                 None,
-            ) {
-                Ok(h) => h,
-                Err(e) => {
-                    Logging::error(&format!("CreateNamedPipeA failed: {:?}, GetLastError={:?}", e, GetLastError()));
-                    thread::sleep(Duration::from_secs(5));
-                    continue;
-                }
-            };
+            );
 
-            // Create event for overlapped ConnectNamedPipe
-            let event = match CreateEventA(None, BOOL(0), BOOL(0), None) {
-                Ok(h) => h,
-                Err(e) => {
-                    Logging::error(&format!("CreateEventA failed: {:?}", e));
-                    let _ = CloseHandle(pipe_handle);
-                    thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-            };
-
-            if event.is_invalid() {
-                Logging::error("CreateEventA returned invalid handle");
-                let _ = CloseHandle(pipe_handle);
-                thread::sleep(Duration::from_millis(100));
+            if pipe_handle.is_invalid() {
+                Logging::error(&format!("CreateNamedPipeA failed: {:?}", GetLastError()));
+                thread::sleep(Duration::from_secs(1));
                 continue;
             }
 
-            // Setup overlapped and use overlapped ConnectNamedPipe
-            let mut overlapped: OVERLAPPED = std::mem::zeroed();
-            overlapped.hEvent = event;
+            Logging::novelty("Waiting for EDR client to connect...");
 
-            let connect_ok: BOOL = ConnectNamedPipe(pipe_handle, Some(&mut overlapped as *mut _));
+            let connect_result = ConnectNamedPipe(pipe_handle, None);
+            let err = GetLastError();
 
-            if connect_ok.as_bool() {
-                // immediate connection (rare)
-                handle_connection(pipe_handle, &tx);
-            } else {
-                let err = GetLastError();
-                if err == ERROR_IO_PENDING {
-                    // Wait for event with timeout
-                    let wait_res = WaitForSingleObject(event, CONNECT_TIMEOUT_MS);
-                    if wait_res == WAIT_OBJECT_0 {
-                        // connected
-                        handle_connection(pipe_handle, &tx);
-                    } else if wait_res == WAIT_TIMEOUT {
-                        Logging::warning("ConnectNamedPipe timed out waiting for client; disconnecting and retrying");
-                        let _ = DisconnectNamedPipe(pipe_handle);
-                        let _ = CloseHandle(pipe_handle);
-                    } else {
-                        Logging::error(&format!("WaitForSingleObject unexpected: {:?}", wait_res));
-                        let _ = DisconnectNamedPipe(pipe_handle);
-                        let _ = CloseHandle(pipe_handle);
+            if connect_result.as_bool() || err == ERROR_PIPE_CONNECTED {
+                Logging::novelty("EDR client connected!");
+
+                // Read & parse request
+                if let Some(request) = read_scan_request(pipe_handle) {
+                    if let Err(e) = tx.send(request) {
+                        Logging::error(&format!("Failed to forward scan request: {}", e));
                     }
-                } else if err == ERROR_PIPE_CONNECTED {
-                    // client connected between CreateNamedPipe and ConnectNamedPipe
-                    handle_connection(pipe_handle, &tx);
-                } else {
-                    Logging::error(&format!("ConnectNamedPipe failed: {:?}", err));
-                    let _ = CloseHandle(pipe_handle);
                 }
+
+                let _ = DisconnectNamedPipe(pipe_handle);
+            } else {
+                Logging::error(&format!("ConnectNamedPipe failed: {:?}", err));
             }
 
-            // cleanup
-            let _ = CloseHandle(event);
-        } // end unsafe
-
-        // small throttle to avoid busy looping if something is broken
-        thread::sleep(Duration::from_millis(10));
-    } // end loop
+            let _ = CloseHandle(pipe_handle);
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 /// Read & parse a single request from a connected pipe handle
