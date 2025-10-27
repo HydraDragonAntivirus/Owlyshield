@@ -10,19 +10,16 @@ use serde::{Deserialize, Serialize};
 use windows::core::PCSTR;
 
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL, ERROR_IO_PENDING, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
-    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES,
+    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, NAMED_PIPE_MODE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeA,
 };
-use windows::Win32::System::IO::OVERLAPPED;
-use windows::Win32::System::Threading::{CreateEventA, WaitForSingleObject};
 
 use crate::IOMessage;
 use crate::process::ProcessRecord;
@@ -33,7 +30,7 @@ const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
 const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
-const CONNECT_TIMEOUT_MS: u32 = 30_000; // 30s - adjust as needed
+const CONNECT_TIMEOUT_MS: u32 = 900_000; // 900s - adjust as needed
 
 /// AV -> EDR event
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -154,44 +151,82 @@ impl AVIntegration {
 /// AV -> EDR client (one-shot): connect to AV->EDR pipe and write threat event
 fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     unsafe {
-        let pipe_name_c = CString::new(PIPE_AV_TO_EDR).map_err(|e| format!("Invalid pipe name: {}", e))?;
+        let pipe_name_c =
+            CString::new(PIPE_AV_TO_EDR).map_err(|e| format!("Invalid pipe name: {}", e))?;
+        let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
+
         event.action_required = "kill_and_remove".to_string();
 
-        // NOTE: pass the underlying .0 integer for FILE_GENERIC_WRITE
-        let pipe_handle_res = CreateFileA(
-            PCSTR(pipe_name_c.as_ptr() as *const u8),
-            FILE_GENERIC_WRITE.0, // <-- use .0 here
+        // Wait for the pipe to become available up to your timeout
+        let wait_ok: BOOL =
+            WaitNamedPipeA(pcstr, CONNECT_TIMEOUT_MS);
+        if !wait_ok.as_bool() {
+            let err = GetLastError();
+            Logging::error(&format!(
+                "Timed out waiting for EDR pipe '{}' ({} ms). GetLastError={:?}",
+                PIPE_AV_TO_EDR, CONNECT_TIMEOUT_MS, err
+            ));
+            return Err(format!(
+                "Timed out waiting for EDR pipe '{}' ({} ms). GetLastError={:?}",
+                PIPE_AV_TO_EDR, CONNECT_TIMEOUT_MS, err
+            ));
+        }
+
+        // CreateFileA returns Result<HANDLE, Error> — unwrap first
+        let pipe_handle = match CreateFileA(
+            pcstr,
+            FILE_GENERIC_WRITE.0,
             FILE_SHARE_NONE,
             None,
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
             HANDLE::default(),
-        );
-
-        let pipe_handle = match pipe_handle_res {
+        ) {
             Ok(h) => h,
             Err(e) => {
                 let last = GetLastError();
-                Logging::error(&format!("Failed to connect to EDR pipe: {:?}, GetLastError={:?}", e, last));
-                return Err(format!("Failed to connect to EDR pipe: {:?}, GetLastError={:?}", e, last));
+                Logging::error(&format!(
+                    "Failed to connect to EDR pipe (CreateFileA error: {:?}, GetLastError={:?})",
+                    e, last
+                ));
+                return Err(format!(
+                    "Failed to connect to EDR pipe (CreateFileA error: {:?}, GetLastError={:?})",
+                    e, last
+                ));
             }
         };
+
+        if pipe_handle.is_invalid() {
+            let last = GetLastError();
+            Logging::error(&format!(
+                "CreateFileA returned invalid handle. GetLastError={:?}",
+                last
+            ));
+            return Err(format!("CreateFileA returned invalid handle: {:?}", last));
+        }
 
         // serialize -> write
         let message = serde_json::to_string(&event).map_err(|e| {
             Logging::error(&format!("serialize error: {}", e));
             format!("serialize error: {}", e)
         })?;
-        let message_bytes = message.as_bytes();
+        let message_bytes: &[u8] = message.as_bytes();
 
-        let mut bytes_written = 0u32;
-        let ok = WriteFile(pipe_handle, Some(message_bytes), Some(&mut bytes_written), None);
+        let mut bytes_written: u32 = 0;
+        // windows::Win32::Storage::FileSystem::WriteFile expects:
+        //   (hfile, Option<&[u8]>, Option<*mut u32>, Option<*mut OVERLAPPED>)
+        let ok: BOOL = WriteFile(
+            pipe_handle,
+            Some(message_bytes),
+            Some(&mut bytes_written as *mut u32),
+            None,
+        );
 
         let _ = FlushFileBuffers(pipe_handle);
         let _ = CloseHandle(pipe_handle);
 
         if !ok.as_bool() {
-            Logging::error("Failed to write to EDR pipe");
+            Logging::error("Failed to write to EDR pipe (WriteFile returned false)");
             return Err("Failed to write to EDR pipe".to_string());
         }
 
@@ -202,7 +237,6 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
         Ok(())
     }
 }
-
 
 /// AV server: persistent listener for EDR -> AV requests
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
@@ -218,7 +252,8 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
         };
 
         loop {
-            let pipe_handle = CreateNamedPipeA(
+            // CreateNamedPipeA returns Result<HANDLE, Error> — unwrap it
+            let pipe_handle = match CreateNamedPipeA(
                 PCSTR(pipe_name_c.as_ptr() as *const u8),
                 PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
@@ -227,23 +262,32 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 BUFFER_SIZE,
                 0,
                 None,
-            );
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    Logging::error(&format!("CreateNamedPipeA failed: {:?}", e));
+                    thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+            };
 
             if pipe_handle.is_invalid() {
-                Logging::error(&format!("CreateNamedPipeA failed: {:?}", GetLastError()));
+                let err = GetLastError();
+                Logging::error(&format!("CreateNamedPipeA returned invalid handle: {:?}", err));
                 thread::sleep(Duration::from_secs(1));
                 continue;
             }
 
             Logging::novelty("Waiting for EDR client to connect...");
 
-            let connect_result = ConnectNamedPipe(pipe_handle, None);
+            // ConnectNamedPipe expects Option<*mut OVERLAPPED>; use None for blocking connect
+            let connect_ok: BOOL = ConnectNamedPipe(pipe_handle, None);
             let err = GetLastError();
 
-            if connect_result.as_bool() || err == ERROR_PIPE_CONNECTED {
+            if connect_ok.as_bool() || err == ERROR_PIPE_CONNECTED {
                 Logging::novelty("EDR client connected!");
 
-                // Read & parse request
+                // Read & parse request (read_scan_request expects HANDLE)
                 if let Some(request) = read_scan_request(pipe_handle) {
                     if let Err(e) = tx.send(request) {
                         Logging::error(&format!("Failed to forward scan request: {}", e));
@@ -267,6 +311,9 @@ fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
         let mut buffer = vec![0u8; BUFFER_SIZE as usize];
         let mut bytes_read: u32 = 0;
 
+        // ReadFile signature in windows crate (bindings) expects:
+        //   ReadFile(hfile, Option<*mut c_void>, nnumberofbytestoread: u32,
+        //            Option<*mut u32>, Option<*mut OVERLAPPED>)
         let result: BOOL = ReadFile(
             pipe_handle,
             Some(buffer.as_mut_ptr() as *mut _),
