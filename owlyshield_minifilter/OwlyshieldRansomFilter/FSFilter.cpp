@@ -198,87 +198,6 @@ Return Value:
     return STATUS_SUCCESS;
 }
 
-typedef struct _WORKER_CONTEXT
-{
-    PIRP_ENTRY Entry;
-    PFLT_CALLBACK_DATA Data;
-    PCFLT_RELATED_OBJECTS FltObjects;
-} WORKER_CONTEXT, *PWORKER_CONTEXT;
-
-VOID FsFilterWorkerRoutine(_In_ PVOID Context)
-{
-    PWORKER_CONTEXT workerCtx = (PWORKER_CONTEXT)Context;
-    PIRP_ENTRY entry = workerCtx->Entry;
-    PFLT_CALLBACK_DATA Data = workerCtx->Data;
-    PCFLT_RELATED_OBJECTS FltObjects = workerCtx->FltObjects;
-
-    NTSTATUS hr = STATUS_SUCCESS;
-
-    // Resolve file name safely at PASSIVE_LEVEL
-    PFLT_FILE_NAME_INFORMATION nameInfo;
-    hr = FltGetFileNameInformation(Data, FLT_FILE_NAME_OPENED | FLT_FILE_NAME_QUERY_ALWAYS_ALLOW_CACHE_LOOKUP,
-                                   &nameInfo);
-
-    if (NT_SUCCESS(hr))
-    {
-        hr = FltParseFileNameInformation(nameInfo);
-        if (NT_SUCCESS(hr))
-        {
-            UNICODE_STRING fullPath;
-            WCHAR fullPathBuffer[MAX_FILE_NAME_SIZE];
-            fullPath.Buffer = fullPathBuffer;
-            fullPath.Length = 0;
-            fullPath.MaximumLength = sizeof(fullPathBuffer);
-
-            hr = FSEntrySetFileName(FltObjects->Volume, nameInfo, &fullPath);
-            if (NT_SUCCESS(hr))
-            {
-                entry->filePath = fullPath;
-            }
-        }
-        FltReleaseFileNameInformation(nameInfo);
-    }
-
-    // Entropy calculation for READ/WRITE IRPs
-    if (Data->Iopb->MajorFunction == IRP_MJ_READ || Data->Iopb->MajorFunction == IRP_MJ_WRITE)
-    {
-        PVOID buffer = NULL;
-        if (Data->Iopb->Parameters.Write.MdlAddress != NULL || Data->Iopb->Parameters.Read.MdlAddress != NULL)
-        {
-            buffer = MmGetSystemAddressForMdlSafe(Data->Iopb->Parameters.Read.MdlAddress
-                                                      ? Data->Iopb->Parameters.Read.MdlAddress
-                                                      : Data->Iopb->Parameters.Write.MdlAddress,
-                                                  NormalPagePriority | MdlMappingNoExecute);
-        }
-        else
-        {
-            buffer = Data->Iopb->Parameters.Read.MdlAddress ? Data->Iopb->Parameters.Read.ReadBuffer
-                                                            : Data->Iopb->Parameters.Write.WriteBuffer;
-        }
-
-        if (buffer != NULL)
-        {
-            __try
-            {
-                entry->data.Entropy =
-                    shannonEntropy((PUCHAR)buffer, Data->IoStatus.Information ? (ULONG)Data->IoStatus.Information
-                                                                              : Data->Iopb->Parameters.Write.Length);
-                entry->data.isEntropyCalc = TRUE;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                // ignore errors
-                entry->data.isEntropyCalc = FALSE;
-            }
-        }
-    }
-
-    // Add IRP message safely
-    driverData->AddIrpMessage(entry);
-
-    ExFreePoolWithTag(workerCtx, 'wrk');
-}
-
 NTSTATUS
 FSInstanceSetup(_In_ PCFLT_RELATED_OBJECTS FltObjects, _In_ FLT_INSTANCE_SETUP_FLAGS Flags,
                 _In_ DEVICE_TYPE VolumeDeviceType, _In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType)
@@ -797,19 +716,9 @@ Return Value:
     }
     else if (Data->Iopb->MajorFunction == IRP_MJ_READ)
     {
-        // Use safe processing to avoid blocking at DISPATCH_LEVEL
-        if (FltDoCompletionProcessingWhenSafe(Data, FltObjects, CompletionContext, Flags, FSProcessPostReadSafe, NULL))
-        {
-            // Queued to worker thread for safe post-processing
-            return FLT_POSTOP_FINISHED_PROCESSING;
-        }
-        else
-        {
-            // Failed to queue or not safe: fallback to direct processing
-            return FSProcessPostReadIrp(Data, FltObjects, CompletionContext, Flags);
-        }
+        // return FLT_POSTOP_FINISHED_PROCESSING;
+        return FSProcessPostReadIrp(Data, FltObjects, CompletionContext, Flags);
     }
-
     return FLT_POSTOP_FINISHED_PROCESSING;
 }
 
@@ -1294,15 +1203,17 @@ VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create)
         DbgPrint("!!! FSFilter: New Process, process: %wZ , pid: %d.\n", procName, (ULONG)(ULONG_PTR)ProcessId);
 
         BOOLEAN found = FALSE;
-        // Instead of skipping all "safe" processes:
-        if (startsWith(procName, driverData->GetSystemRootPath()) &&
-            startsWith(parentName, driverData->GetSystemRootPath()) &&
-            (driverData->GetProcessGid((ULONG)(ULONG_PTR)ParentId, &found) == 0) && !found)
+        if (startsWith(procName, driverData->GetSystemRootPath()) &&   // process in safe area
+            startsWith(parentName, driverData->GetSystemRootPath()) && // parent in safe area
+            (driverData->GetProcessGid((ULONG)(ULONG_PTR)ParentId, &found) == 0) &&
+            !found) // parent is not documented, if it was there was a recursive call from not safe process which
+                    // resulted in safe are in windows dir
         {
-            // Don't skip - record all processes
-            // DbgPrint("!!! FSFilter: Open Process not recorded, both parent and process are safe\n");
-            // delete parentName; delete procName; return;
-        
+            DbgPrint("!!! FSFilter: Open Process not recorded, both parent and process are safe\n");
+            delete parentName;
+            delete procName;
+            return;
+        }
         // options to reach: process is not safe (parent safe or not), process safe parent is not, both safe but before
         // parent there was unsafe process
         DbgPrint("!!! FSFilter: Open Process recording, is parent safe: %d, is process safe: %d\n",
