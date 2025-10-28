@@ -9,12 +9,13 @@ use crate::config::ConfigReader;
 
 #[derive(Copy, Clone)]
 enum Status {
-    Start, // Program starting
-    Stop, // Program stopping
-    Alert, // Program detected a malware
-    Warning, // Warning in program execution
-    Error, // Error in program execution
-    Novelty, // Notice a novelty
+    Start,    // Program starting
+    Stop,     // Program stopping
+    Alert,    // Program detected a malware
+    Warning,  // Warning in program execution
+    Error,    // Error in program execution
+    Novelty,  // Notice a novelty
+    Info,     // General information
 }
 
 impl Status {
@@ -26,6 +27,7 @@ impl Status {
             Status::Warning => "WARNING",
             Status::Error => "ERROR",
             Status::Novelty => "NOVELTY",
+            Status::Info => "INFO",
         }
     }
 }
@@ -76,13 +78,22 @@ impl Logging {
         Logging::log(Status::Novelty, message);
     }
 
+    /// Log general information
+    pub fn info(message: &str) {
+        Logging::log(Status::Info, message);
+    }
+
     #[cfg(target_os = "windows")]
     fn log(status: Status, message: &str) {
         Self::log_in_file(status, message, ConfigReader::read_param_from_registry("LOG_PATH", r"SOFTWARE\Owlyshield").as_str());
 
-        match status.clone() {
-            Status::Alert | Status::Warning | Status::Novelty => { warn!("{}: {}", status.to_str(), message); },
-            Status::Error => error!("{}: {}", status.to_str(), message),
+        match status {
+            Status::Alert | Status::Warning | Status::Novelty => { 
+                warn!("{}: {}", status.to_str(), message); 
+            },
+            Status::Error => {
+                error!("{}: {}", status.to_str(), message);
+            },
             _ => {
                 if message.is_empty() {
                     info!("{}", status.to_str());

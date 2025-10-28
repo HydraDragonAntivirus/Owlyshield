@@ -13,12 +13,12 @@ use windows::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, ERROR_PIPE_CONNECTED, BOOL,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
-    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED,
+    CreateFileA, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, 
+    FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeA,
+    ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, PIPE_TYPE_BYTE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeA, PIPE_READMODE_BYTE, 
 };
 
 use crate::IOMessage;
@@ -101,7 +101,7 @@ impl AVIntegration {
         loop {
             match self.scan_request_rx.try_recv() {
                 Ok(request) => {
-                    Logging::novelty(&format!(
+                    Logging::info(&format!(
                         "Received scan request: {} ({})",
                         request.file_path, request.event_type
                     ));
@@ -230,7 +230,7 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
             return Err("Failed to write to EDR pipe".to_string());
         }
 
-        Logging::novelty(&format!(
+        Logging::info(&format!(
             "Successfully sent threat event to EDR: {} - {} ({} bytes)",
             event.file_path, event.virus_name, bytes_written
         ));
@@ -238,9 +238,72 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
     }
 }
 
+/// Read & parse a single request from a connected pipe handle
+fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
+    unsafe {
+        let mut buffer = vec![0u8; BUFFER_SIZE as usize];
+        let mut bytes_read: u32 = 0;
+
+        // Fix 4: Better error handling and logging
+        let result: BOOL = ReadFile(
+            pipe_handle,
+            Some(buffer.as_mut_ptr() as *mut _),
+            buffer.len() as u32,
+            Some(&mut bytes_read as *mut u32),
+            None,
+        );
+
+        if !result.as_bool() {
+            let err = GetLastError();
+            Logging::error(&format!("ReadFile failed: {:?}", err));
+            return None;
+        }
+
+        if bytes_read == 0 {
+            Logging::warning("ReadFile returned 0 bytes");
+            return None;
+        }
+
+        Logging::info(&format!("Read {} bytes from pipe", bytes_read));
+
+        // Fix 5: Show preview of raw bytes for debugging
+        let preview_len = std::cmp::min(bytes_read as usize, 100);
+        Logging::info(&format!(
+            "Raw bytes preview: {:?}", 
+            &buffer[..preview_len]
+        ));
+
+        let data = match std::str::from_utf8(&buffer[..bytes_read as usize]) {
+            Ok(s) => s,
+            Err(e) => {
+                Logging::error(&format!("Invalid UTF-8 in scan request: {}", e));
+                Logging::error(&format!("Bytes: {:?}", &buffer[..bytes_read as usize]));
+                return None;
+            }
+        };
+
+        Logging::info(&format!("Received data: {}", data));
+
+        match serde_json::from_str::<EDRScanRequest>(data) {
+            Ok(request) => {
+                Logging::info(&format!(
+                    "Successfully parsed scan request for: {}", 
+                    request.file_path
+                ));
+                Some(request)
+            }
+            Err(e) => {
+                Logging::error(&format!("Failed to parse scan request JSON: {}", e));
+                Logging::error(&format!("Data received: {}", data));
+                None
+            }
+        }
+    }
+}
+
 /// AV server: persistent listener for EDR -> AV requests
 fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
-    Logging::novelty(&format!("Starting pipe server: {}", PIPE_EDR_TO_AV));
+    Logging::info(&format!("Starting pipe server: {}", PIPE_EDR_TO_AV));
 
     unsafe {
         let pipe_name_c = match CString::new(PIPE_EDR_TO_AV) {
@@ -252,11 +315,12 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
         };
 
         loop {
-            // CreateNamedPipeA returns Result<HANDLE, Error> — unwrap it
+            // Fix 1: Remove FILE_FLAG_OVERLAPPED for blocking I/O
+            // Fix 2: Use BYTE mode to match Python side
             let pipe_handle = match CreateNamedPipeA(
                 PCSTR(pipe_name_c.as_ptr() as *const u8),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                PIPE_ACCESS_DUPLEX,  // Removed FILE_FLAG_OVERLAPPED
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,  // Changed to BYTE mode
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
                 BUFFER_SIZE,
@@ -278,20 +342,29 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
                 continue;
             }
 
-            Logging::novelty("Waiting for EDR client to connect...");
+            Logging::info("Waiting for EDR client to connect...");
 
-            // ConnectNamedPipe expects Option<*mut OVERLAPPED>; use None for blocking connect
+            // ConnectNamedPipe with blocking mode (None for OVERLAPPED param)
             let connect_ok: BOOL = ConnectNamedPipe(pipe_handle, None);
             let err = GetLastError();
 
-            if connect_ok.as_bool() || err == ERROR_PIPE_CONNECTED {
-                Logging::novelty("EDR client connected!");
+            // Fix 3: Add detailed logging
+            Logging::info(&format!(
+                "ConnectNamedPipe result: ok={}, error={:?}", 
+                connect_ok.as_bool(), 
+                err
+            ));
 
-                // Read & parse request (read_scan_request expects HANDLE)
+            if connect_ok.as_bool() || err == ERROR_PIPE_CONNECTED {
+                Logging::info("EDR client connected!");
+
+                // Read & parse request
                 if let Some(request) = read_scan_request(pipe_handle) {
                     if let Err(e) = tx.send(request) {
                         Logging::error(&format!("Failed to forward scan request: {}", e));
                     }
+                } else {
+                    Logging::warning("Failed to read scan request from connected client");
                 }
 
                 let _ = DisconnectNamedPipe(pipe_handle);
@@ -301,47 +374,6 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
 
             let _ = CloseHandle(pipe_handle);
             thread::sleep(Duration::from_millis(50));
-        }
-    }
-}
-
-/// Read & parse a single request from a connected pipe handle
-fn read_scan_request(pipe_handle: HANDLE) -> Option<EDRScanRequest> {
-    unsafe {
-        let mut buffer = vec![0u8; BUFFER_SIZE as usize];
-        let mut bytes_read: u32 = 0;
-
-        // ReadFile signature in windows crate (bindings) expects:
-        //   ReadFile(hfile, Option<*mut c_void>, nnumberofbytestoread: u32,
-        //            Option<*mut u32>, Option<*mut OVERLAPPED>)
-        let result: BOOL = ReadFile(
-            pipe_handle,
-            Some(buffer.as_mut_ptr() as *mut _),
-            buffer.len() as u32,
-            Some(&mut bytes_read as *mut u32),
-            None,
-        );
-
-        if !result.as_bool() || bytes_read == 0 {
-            Logging::warning("read_scan_request: ReadFile failed or returned 0 bytes");
-            return None;
-        }
-
-        let data = match std::str::from_utf8(&buffer[..bytes_read as usize]) {
-            Ok(s) => s,
-            Err(e) => {
-                Logging::error(&format!("Invalid UTF-8 in scan request: {}", e));
-                return None;
-            }
-        };
-
-        match serde_json::from_str::<EDRScanRequest>(data) {
-            Ok(request) => Some(request),
-            Err(e) => {
-                Logging::error(&format!("Failed to parse scan request JSON: {}", e));
-                Logging::error(&format!("Data received: {}", data));
-                None
-            }
         }
     }
 }
