@@ -750,8 +750,35 @@ pub mod worker_instance {
         pub fn process_io(&mut self, iomsg: &mut IOMessage) {
             self.register_precord(iomsg);
             if let Some(precord) = self.process_records.get_precord_mut_by_gid(iomsg.gid) {
-                // The third-party AV check now happens inside handle_io
-                precord.add_irp_record(iomsg, None); // Passing None as av_integration is no longer directly handled here.
+                // Get AVIntegration from global if hydradragon feature is enabled
+                #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+                {
+                    use crate::{HYDRA_DRAGON_INTEGRATION, HYDRA_DRAGON_ENABLED};
+                    
+                    if *HYDRA_DRAGON_ENABLED {
+                        if let Some(av_mutex) = HYDRA_DRAGON_INTEGRATION.as_ref() {
+                            match av_mutex.lock() {
+                                Ok(mut av_integration) => {
+                                    Logging::info("Passing AVIntegration to add_irp_record");
+                                    precord.add_irp_record(iomsg, Some(&mut *av_integration));
+                                }
+                                Err(e) => {
+                                    Logging::error(&format!("Failed to lock AVIntegration mutex: {}", e));
+                                    precord.add_irp_record(iomsg, None);
+                                }
+                            }
+                        } else {
+                            precord.add_irp_record(iomsg, None);
+                        }
+                    } else {
+                        precord.add_irp_record(iomsg, None);
+                    }
+                }
+                
+                #[cfg(not(all(target_os = "windows", feature = "hydradragon")))]
+                {
+                    precord.add_irp_record(iomsg, None);
+                }
 
                 if let Some(process_record_handler) = &mut self.process_record_handler {
                     process_record_handler.handle_io(precord);
