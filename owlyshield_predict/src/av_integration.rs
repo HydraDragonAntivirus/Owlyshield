@@ -32,6 +32,30 @@ const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 const BUFFER_SIZE: u32 = 8192;
 const CONNECT_TIMEOUT_MS: u32 = 900_000; // 900s - adjust as needed
 
+/// Action to take when a threat is detected
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub enum ThreatAction {
+    #[serde(rename = "kill_and_quarantine")]
+    KillAndQuarantine,
+    #[serde(rename = "kill_only")]
+    KillOnly,
+}
+
+impl Default for ThreatAction {
+    fn default() -> Self {
+        ThreatAction::KillAndQuarantine
+    }
+}
+
+impl ThreatAction {
+    pub fn as_str(&self) -> &str {
+        match self {
+            ThreatAction::KillAndQuarantine => "kill_and_quarantine",
+            ThreatAction::KillOnly => "kill_only",
+        }
+    }
+}
+
 /// AV -> EDR event
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AVThreatEvent {
@@ -40,7 +64,8 @@ pub struct AVThreatEvent {
     pub virus_name: String,
     pub is_malicious: bool,
     pub detection_type: String,
-    pub action_required: String,
+    #[serde(default)]
+    pub action_required: ThreatAction,
     #[serde(default)]
     pub pid: Option<u32>,
     #[serde(default)]
@@ -76,86 +101,82 @@ pub struct AVIntegration {
 }
 
 impl AVIntegration {
-    pub fn new() -> Self {
-        let (scan_tx, scan_rx) = channel();
-        let internal_tx = scan_tx.clone();
+    /// Process a single threat event according to its configured action
+    pub fn process_threat_action(
+        &self,
+        event: &AVThreatEvent,
+        precord: &ProcessRecord,
+        prediction_behavioural: f32,
+    ) {
+        match event.action_required {
+            ThreatAction::KillOnly => {
+                Logging::info(&format!(
+                    "⚠️ Threat detected [{}] - KillOnly: {}",
+                    event.virus_name, event.file_path
+                ));
 
-        // Server thread: persistent listener for EDR -> AV requests
-        let scan_handle = thread::spawn(move || {
-            scan_request_server_loop(scan_tx);
-        });
+                // Run post-kill actions (driver kill happens via Connectors inside ActionsOnKill)
+                ActionsOnKill::new().run_actions(
+                    &self.config,
+                    precord,
+                    &self.predictor_malware.predictor_behavioural.mlp.timesteps,
+                    prediction_behavioural,
+                );
+            }
 
-        AVIntegration {
-            scan_request_rx: scan_rx,
-            internal_scan_tx: internal_tx,
-            _scan_request_handle: scan_handle,
-        }
-    }
+            ThreatAction::KillAndQuarantine => {
+                Logging::info(&format!(
+                    "⚠️ Threat detected [{}] - KillAndQuarantine: {}",
+                    event.virus_name, event.file_path
+                ));
 
-    pub fn send_threat_event(&self, event: AVThreatEvent) -> Result<(), String> {
-        send_threat_to_edr(event)
-    }
+                // Run post-kill actions (driver kill happens via Connectors inside ActionsOnKill)
+                ActionsOnKill::new().run_actions(
+                    &self.config,
+                    precord,
+                    &self.predictor_malware.predictor_behavioural.mlp.timesteps,
+                    prediction_behavioural,
+                );
+            }
 
-    pub fn poll_scan_requests(&mut self) -> Vec<EDRScanRequest> {
-        let mut requests = Vec::new();
-        loop {
-            match self.scan_request_rx.try_recv() {
-                Ok(request) => {
-                    Logging::info(&format!(
-                        "Received scan request: {} ({})",
-                        request.file_path, request.event_type
-                    ));
-                    requests.push(request);
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    Logging::error("AVIntegration: Scan request channel disconnected");
-                    break;
-                }
+            _ => {
+                Logging::debug(&format!(
+                    "No kill or removal required for [{}]",
+                    event.file_path
+                ));
             }
         }
-        requests
     }
 
-    pub fn send_scan_response(&self, response: AVScanResponse) -> Result<(), String> {
-        // repackage as threat event and send to EDR (client role)
-        let event = AVThreatEvent {
-            timestamp: response.scan_timestamp,
-            file_path: response.file_path,
-            virus_name: response.virus_name.unwrap_or_else(|| "Clean".to_string()),
-            is_malicious: response.is_malicious,
-            detection_type: "on_demand_scan".to_string(),
-            action_required: "kill_and_remove".to_string(),
-            pid: None,
-            gid: None,
-        };
-        self.send_threat_event(event)
-    }
+    /// Main loop to handle queued threat events
+    pub fn handle_event_loop(&self) {
+        loop {
+            if let Some(event) = self.event_queue.lock().unwrap().pop_front() {
+                // Compute behavioural prediction
+                let prediction_behavioural = self
+                    .predictor_malware
+                    .predictor_behavioural
+                    .mlp
+                    .predict(&event.features);
 
-    /// Called by kernel/event handling to queue internal requests (no external client)
-    pub fn queue_file_event(&mut self, iomsg: &IOMessage, precord: &ProcessRecord) {
-        let request = EDRScanRequest {
-            event_type: "NEW_IO_EVENT".to_string(),
-            file_path: precord.exepath.to_string_lossy().to_string(),
-            timestamp: Utc::now().to_rfc3339(),
-            pid: Some(iomsg.pid),
-            additional_context: Some(format!("Event triggered by GID: {}", precord.gid)),
-        };
+                // Build process record for reporting
+                let precord = ProcessRecord::from_event(&event);
 
-        if let Err(e) = self.internal_scan_tx.send(request) {
-            Logging::error(&format!("Failed to send internal scan request: {}", e));
+                // Execute threat action
+                self.process_threat_action(&event, &precord, prediction_behavioural);
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(250));
         }
     }
 }
 
 /// AV -> EDR client (one-shot): connect to AV->EDR pipe and write threat event
-fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
+fn send_threat_to_edr(event: AVThreatEvent) -> Result<(), String> {
     unsafe {
         let pipe_name_c =
             CString::new(PIPE_AV_TO_EDR).map_err(|e| format!("Invalid pipe name: {}", e))?;
         let pcstr = PCSTR(pipe_name_c.as_ptr() as *const u8);
-
-        event.action_required = "kill_and_remove".to_string();
 
         // Wait for the pipe to become available up to your timeout
         let wait_ok: BOOL =
@@ -231,8 +252,8 @@ fn send_threat_to_edr(mut event: AVThreatEvent) -> Result<(), String> {
         }
 
         Logging::info(&format!(
-            "Successfully sent threat event to EDR: {} - {} ({} bytes)",
-            event.file_path, event.virus_name, bytes_written
+            "Successfully sent threat event to EDR: {} - {} [{}] ({} bytes)",
+            event.file_path, event.virus_name, event.action_required.as_str(), bytes_written
         ));
         Ok(())
     }
@@ -315,11 +336,10 @@ fn scan_request_server_loop(tx: Sender<EDRScanRequest>) {
         };
 
         loop {
-            // Fix 1: Remove FILE_FLAG_OVERLAPPED for blocking I/O
             // Fix 2: Use BYTE mode to match Python side
             let pipe_handle = match CreateNamedPipeA(
                 PCSTR(pipe_name_c.as_ptr() as *const u8),
-                PIPE_ACCESS_DUPLEX,  // Removed FILE_FLAG_OVERLAPPED
+                PIPE_ACCESS_DUPLEX,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,  // Changed to BYTE mode
                 PIPE_UNLIMITED_INSTANCES,
                 BUFFER_SIZE,
