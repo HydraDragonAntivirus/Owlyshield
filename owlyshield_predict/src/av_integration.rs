@@ -24,6 +24,10 @@ use windows::Win32::System::Pipes::{
 use crate::IOMessage;
 use crate::process::ProcessRecord;
 use crate::logging::Logging;
+// MODIFIED: Import ActionsOnKill and the new ThreatInfo struct
+// (Assuming this import is or should be present for the original code to work)
+use crate::actions_on_kill::{ActionsOnKill, ThreatInfo};
+
 
 // --- Pipe names (single source of truth) ---
 const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
@@ -100,6 +104,7 @@ pub struct AVIntegration {
     _scan_request_handle: thread::JoinHandle<()>,
 }
 
+// NOTE: The following methods are assumed to be part of `impl AVIntegration`
 impl AVIntegration {
     /// Process a single threat event according to its configured action
     pub fn process_threat_action(
@@ -108,6 +113,26 @@ impl AVIntegration {
         precord: &ProcessRecord,
         prediction_behavioural: f32,
     ) {
+        // --- MODIFIED: Common logic to create ThreatInfo ---
+        
+        // Helper logic to determine threat label
+        let threat_label = if event.detection_type.to_lowercase().contains("pua") || event.virus_name.to_lowercase().contains("pua") {
+            "Potentially Unwanted Application"
+        } else if event.detection_type.to_lowercase().contains("ransom") || event.virus_name.to_lowercase().contains("ransom") {
+            "Ransomware"
+        } else {
+            "Malware" // Default to "Malware" for other detections
+        };
+
+        // Create the detailed ThreatInfo struct
+        let threat_info = ThreatInfo {
+            threat_type_label: threat_label,
+            // Use virus_name, or detection_type if virus_name is empty
+            virus_name: if event.virus_name.is_empty() { &event.detection_type } else { &event.virus_name },
+            prediction: prediction_behavioural, // Use the behavioural score as certainty
+        };
+        // --- End of modified logic ---
+
         match event.action_required {
             ThreatAction::KillOnly => {
                 Logging::info(&format!(
@@ -116,11 +141,12 @@ impl AVIntegration {
                 ));
 
                 // Run post-kill actions (driver kill happens via Connectors inside ActionsOnKill)
-                ActionsOnKill::new().run_actions(
+                // MODIFIED: Call the new function with the detailed info
+                ActionsOnKill::new().run_actions_with_info(
                     &self.config,
                     precord,
                     &self.predictor_malware.predictor_behavioural.mlp.timesteps,
-                    prediction_behavioural,
+                    &threat_info, // Pass the new struct
                 );
             }
 
@@ -131,11 +157,12 @@ impl AVIntegration {
                 ));
 
                 // Run post-kill actions (driver kill happens via Connectors inside ActionsOnKill)
-                ActionsOnKill::new().run_actions(
+                // MODIFIED: Call the new function with the detailed info
+                ActionsOnKill::new().run_actions_with_info(
                     &self.config,
                     precord,
                     &self.predictor_malware.predictor_behavioural.mlp.timesteps,
-                    prediction_behavioural,
+                    &threat_info, // Pass the new struct
                 );
             }
 
