@@ -219,6 +219,7 @@ pub mod process_record_handling {
     use crate::watchlist::WatchList;
     use crate::novelty::{Rule, StateSave};
     use crate::worker::threat_handling::ThreatHandler;
+    #[cfg(all(target_os = "windows", feature = "hydradragon"))]
     use crate::Logging;
 
     pub trait Exepath {
@@ -585,6 +586,7 @@ pub mod worker_instance {
     use crate::jsonrpc::{Jsonrpc, RPCMessage};
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::worker::threat_handling::ThreatHandler;
+    #[cfg(all(target_os = "windows", feature = "novelty"))]
     use crate::Logging;
     
     pub trait IOMsgPostProcessor {
@@ -760,7 +762,6 @@ pub mod worker_instance {
                         if let Some(av_mutex) = HYDRA_DRAGON_INTEGRATION.as_ref() {
                             match av_mutex.lock() {
                                 Ok(mut av_integration) => {
-                                    Logging::info("Passing AVIntegration to add_irp_record");
                                     precord.add_irp_record(iomsg, Some(&mut *av_integration));
                                 }
                                 Err(e) => {

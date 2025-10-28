@@ -54,7 +54,7 @@ CONST FLT_REGISTRATION FilterRegistration = {
     0,                          //  Flags
     NULL,                       //  Context Registration.
     Callbacks,                  //  Operation callbacks
-    FSUnloadDriver,             //  FilterUnload
+    NULL,                       //  FilterUnload
     FSInstanceSetup,            //  InstanceSetup
     FSInstanceQueryTeardown,    //  InstanceQueryTeardown
     FSInstanceTeardownStart,    //  InstanceTeardownStart
@@ -159,8 +159,8 @@ Return Value:
     return STATUS_SUCCESS;
 }
 
-NTSTATUS
-FSUnloadDriver(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
+// NTSTATUS
+// FSUnloadDriver(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
 /*++
 
 Routine Description:
@@ -178,6 +178,7 @@ Return Value:
     Returns the final status of the deallocation routines.
 
 --*/
+/*
 {
     UNREFERENCED_PARAMETER(Flags);
 
@@ -197,7 +198,7 @@ Return Value:
     PsSetCreateProcessNotifyRoutine(AddRemProcessRoutine, TRUE);
     return STATUS_SUCCESS;
 }
-
+*/
 NTSTATUS
 FSInstanceSetup(_In_ PCFLT_RELATED_OBJECTS FltObjects, _In_ FLT_INSTANCE_SETUP_FLAGS Flags,
                 _In_ DEVICE_TYPE VolumeDeviceType, _In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType)
