@@ -1,18 +1,18 @@
 use crate::logging::Logging;
 use crate::process::{ProcessRecord, ProcessState};
 use crate::worker::threat_handling::ThreatHandler;
-use windows::Win32::System::Diagnostics::Debug::{DebugActiveProcess, DebugActiveProcessStop, DebugSetProcessKillOnExit};
+use windows::Win32::System::Diagnostics::Debug::{
+    DebugActiveProcess, DebugActiveProcessStop, DebugSetProcessKillOnExit,
+};
 use crate::driver_com::Driver;
 
 pub struct WindowsThreatHandler {
-    driver: Driver
+    driver: Driver,
 }
 
 impl WindowsThreatHandler {
     pub fn from(driver: Driver) -> WindowsThreatHandler {
-        WindowsThreatHandler {
-            driver
-        }
+        WindowsThreatHandler { driver }
     }
 }
 
@@ -30,6 +30,24 @@ impl ThreatHandler for WindowsThreatHandler {
         let proc_handle = self.driver.try_kill(gid).unwrap();
         println!("Killed Process with Handle {}", proc_handle.0);
         Logging::alert(format!("Killed Process with Handle {}", proc_handle.0).as_str());
+    }
+
+    // New method required by worker.rs
+    fn kill_and_quarantine(&self, gid: u64) {
+        // TODO: if Driver has a quarantine API (e.g. `try_kill_and_quarantine`), call it here.
+        // Fallback: just kill and note that quarantine isn't implemented yet.
+        let proc_handle = self.driver.try_kill(gid).unwrap();
+        println!(
+            "Killed (and QUARANTINE not implemented) Process with Handle {}",
+            proc_handle.0
+        );
+        Logging::alert(
+            format!(
+                "Killed (and QUARANTINE not implemented) Process with Handle {}",
+                proc_handle.0
+            )
+            .as_str(),
+        );
     }
 
     fn awake(&self, proc: &mut ProcessRecord, kill_proc_on_exit: bool) {

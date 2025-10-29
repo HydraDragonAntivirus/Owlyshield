@@ -3,7 +3,7 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::time::SystemTime;
 use chrono::{DateTime, Local};
-use log::{error, warn, info};
+use log::{error, warn, info, debug};
 use crate::utils::LOG_TIME_FORMAT;
 use crate::config::ConfigReader;
 
@@ -16,6 +16,7 @@ enum Status {
     Error,    // Error in program execution
     Novelty,  // Notice a novelty
     Info,     // General information
+    Debug,    // Debug-level message
 }
 
 impl Status {
@@ -28,6 +29,7 @@ impl Status {
             Status::Error => "ERROR",
             Status::Novelty => "NOVELTY",
             Status::Info => "INFO",
+            Status::Debug => "DEBUG",
         }
     }
 }
@@ -83,6 +85,11 @@ impl Logging {
         Logging::log(Status::Info, message);
     }
 
+    /// Log debug information
+    pub fn debug(message: &str) {
+        Logging::log(Status::Debug, message);
+    }
+
     #[cfg(target_os = "windows")]
     fn log(status: Status, message: &str) {
         Self::log_in_file(status, message, ConfigReader::read_param_from_registry("LOG_PATH", r"SOFTWARE\Owlyshield").as_str());
@@ -93,6 +100,9 @@ impl Logging {
             },
             Status::Error => {
                 error!("{}: {}", status.to_str(), message);
+            },
+            Status::Debug => {
+                debug!("{}: {}", status.to_str(), message);
             },
             _ => {
                 if message.is_empty() {

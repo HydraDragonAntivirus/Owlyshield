@@ -1,4 +1,4 @@
-mod predictor {
+pub mod predictor {
     use crate::config::Config;
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::predictions::prediction::input_tensors::VecvecCappedF32;
@@ -282,13 +282,10 @@ pub mod process_record_handling {
     impl ProcessRecordIOHandler for ProcessRecordHandlerLive<'_> {
         #[cfg(target_os = "windows")]
         fn handle_io(&mut self, precord: &mut ProcessRecord) {
-            // This code path only handles Owlyshield's internal predictions
-            
             if let Some(prediction_behavioural) = self.predictor_malware.predict(precord) {
                 if prediction_behavioural > self.config.threshold_prediction
                     || precord.appname.contains("TEST-OLRANSOM")
                 {
-                    // MODIFIED: Changed back to "Ransomware" per your request
                     println!("Ransomware Suspected!!!"); 
                     eprintln!("precord.gid = {:?}", precord.gid);
                     println!("{}", precord.appname);
@@ -302,6 +299,7 @@ pub mod process_record_handling {
                         self.config[Param::ConfigPath]
                     );
 
+                    // Handle based on kill policy
                     match self.config.get_kill_policy() {
                         KillPolicy::Suspend => {
                             if precord.process_state != ProcessState::Suspended {
@@ -309,24 +307,26 @@ pub mod process_record_handling {
                             }
                         }
                         KillPolicy::Kill => {
-                            self.threat_handler.kill(precord.gid);
+                            // Use kill_and_quarantine for Owlyshield's own detections
+                            self.threat_handler.kill_and_quarantine(precord.gid);
                             precord.process_state = ProcessState::Killed;
                         }
                         KillPolicy::DoNothing => {}
                     }
 
-                    // MODIFIED: Use ThreatInfo, but with the correct "Ransomware" label
+                    // Create threat info for reporting
                     let threat_info = ThreatInfo {
-                        threat_type_label: "Ransomware", // Correctly labels it as Ransomware
+                        threat_type_label: "Ransomware",
                         virus_name: "Behavioural Detection",     
                         prediction: prediction_behavioural,
                     };
                     
+                    // Run post-kill actions (logging, reporting, notifications)
                     ActionsOnKill::new().run_actions_with_info(
                         self.config,
                         precord,
                         &self.predictor_malware.predictor_behavioural.mlp.timesteps,
-                        &threat_info, // Pass the new detailed struct
+                        &threat_info,
                     );
                 }
             }
@@ -338,7 +338,6 @@ pub mod process_record_handling {
                 if prediction_behavioural > self.config.threshold_prediction
                     || precord.appname.contains("TEST-OLRANSOM")
                 {
-                    // MODIFIED: Changed back to "Ransomware" per your request
                     println!("Ransomware Suspected!!!");
                     eprintln!("precord.gid = {:?}", precord.gid);
                     println!("{}", precord.appname);
@@ -352,9 +351,8 @@ pub mod process_record_handling {
                         self.config[Param::ConfigPath]
                     );
 
-                    // MODIFIED: Use ThreatInfo, but with the correct "Ransomware" label
                     let threat_info = ThreatInfo {
-                        threat_type_label: "Ransomware", // Correctly labels it as Ransomware
+                        threat_type_label: "Ransomware",
                         virus_name: "Behavioural Detection",
                         prediction: prediction_behavioural,
                     };
@@ -363,7 +361,7 @@ pub mod process_record_handling {
                         self.config,
                         precord,
                         &self.predictor_malware.predictor_behavioural.mlp.timesteps,
-                        &threat_info, // Pass the new detailed struct
+                        &threat_info,
                     );
                 }
             }
@@ -392,7 +390,7 @@ pub mod process_record_handling {
         fn handle_io(&mut self, precord: &mut ProcessRecord) {
             let timestep = Timestep::from(precord);
             if precord.driver_msg_count % self.timesteps_stride == 0 {
-                thread::sleep(Duration::from_millis(2)); // To let time for clustering
+                thread::sleep(Duration::from_millis(2));
                 self.csvwriter
                     .write_debug_csv_files(&precord.appname, precord.gid, &timestep, precord.time)
                     .expect("Cannot write csv learn file");
@@ -417,7 +415,7 @@ pub mod process_record_handling {
 
     impl ProcessRecordIOHandler for ProcessRecordHandlerNovelty<'_> {
         fn handle_io(&mut self, precord: &mut ProcessRecord) {
-            if precord.driver_msg_count % 5 == 0 { // Limit use of resources
+            if precord.driver_msg_count % 5 == 0 {
                 if self.watchlist.is_app_watchlisted(precord.appname.as_str()) {
                     let novelty_path = self.config[Param::NoveltyPath].as_str();
                     let app_file = &precord.appname.replace(".", "_");
@@ -573,9 +571,17 @@ mod process_records {
 pub mod threat_handling {
     use crate::process::ProcessRecord;
 
+    /// Threat action types matching kernel driver message types
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum ThreatActionType {
+        KillAndQuarantine,
+        KillOnly,
+    }
+
     pub trait ThreatHandler {
         fn suspend(&self, proc: &mut ProcessRecord);
         fn kill(&self, gid: u64);
+        fn kill_and_quarantine(&self, gid: u64);
         fn awake(&self, proc: &mut ProcessRecord, kill_proc_on_exit: bool);
     }
 }
@@ -601,7 +607,8 @@ pub mod worker_instance {
     use crate::jsonrpc::{Jsonrpc, RPCMessage};
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::worker::threat_handling::ThreatHandler;
-    
+    use crate::Logging;
+
     pub trait IOMsgPostProcessor {
         fn postprocess(&mut self, iomsg: &mut IOMessage, precord: &ProcessRecord);
     }
@@ -778,7 +785,7 @@ pub mod worker_instance {
                                     precord.add_irp_record(iomsg, Some(&mut *av_integration));
                                 }
                                 Err(e) => {
-                                    kill_and_quarantine::error(&format!("Failed to lock AVIntegration mutex: {}", e));
+                                    Logging::error(&format!("Failed to lock AVIntegration mutex: {}", e));
                                     precord.add_irp_record(iomsg, None);
                                 }
                             }
