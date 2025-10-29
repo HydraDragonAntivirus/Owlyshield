@@ -54,25 +54,6 @@ impl ActionsOnKill {
         }
     }
 
-    /// ORIGINAL run_actions: Kept for compatibility.
-    /// Assumes "Ransomware" from behavioural detection by default.
-    pub fn run_actions(
-        &self,
-        config: &Config,
-        proc: &ProcessRecord,
-        pred_mtrx: &VecvecCappedF32,
-        prediction: f32, // The original prediction score
-    ) {
-        // Create a default "Ransomware" info struct
-        let threat_info = ThreatInfo {
-            threat_type_label: "Ransomware",
-            virus_name: "Behavioural Detection",
-            prediction,
-        };
-        // Call the new, detailed function
-        self.run_actions_with_info(config, proc, pred_mtrx, &threat_info);
-    }
-
     /// NEW run_actions_with_info: The main logic, now takes ThreatInfo
     pub fn run_actions_with_info(
         &self,

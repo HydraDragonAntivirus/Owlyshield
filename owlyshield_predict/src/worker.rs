@@ -56,7 +56,7 @@ pub mod predictor {
     }
 
     impl PredictionhandlerBehaviouralXGBoost<'_> {
-        pub fn new(config: &Config) -> PredictionhandlerBehaviouralXGBoost {
+        pub fn new(config: &Config) -> PredictionhandlerBehaviouralXGBoost<'_> {
             PredictionhandlerBehaviouralXGBoost {
                 config,
                 predictions_count: 0,
@@ -93,7 +93,7 @@ pub mod predictor {
     }
 
     impl PredictorHandlerBehaviouralMLP<'_> {
-        pub fn new(config: &Config) -> PredictorHandlerBehaviouralMLP {
+        pub fn new(config: &Config) -> PredictorHandlerBehaviouralMLP<'_> {
             PredictorHandlerBehaviouralMLP {
                 config,
                 timesteps: VecvecCappedF32::new(PREDMTRXCOLS, PREDMTRXROWS),
@@ -143,7 +143,7 @@ pub mod predictor {
     }
 
     impl PredictorMalwareBehavioural<'_> {
-        pub fn new(config: &Config) -> PredictorMalwareBehavioural {
+        pub fn new(config: &Config) -> PredictorMalwareBehavioural<'_> {
             PredictorMalwareBehavioural {
                 mlp: PredictorHandlerBehaviouralMLP::new(config),
                 xgboost: PredictionhandlerBehaviouralXGBoost::new(config),
@@ -173,7 +173,7 @@ pub mod predictor {
     }
 
     impl PredictorMalware<'_> {
-        pub fn new(config: &Config) -> PredictorMalware {
+        pub fn new(config: &Config) -> PredictorMalware<'_> {
             PredictorMalware {
                 predictor_behavioural: PredictorMalwareBehavioural::new(config),
                 predictor_static: PredictorHandlerStatic::new(config),
@@ -572,6 +572,7 @@ pub mod threat_handling {
     use crate::process::ProcessRecord;
 
     /// Threat action types matching kernel driver message types
+    #[allow(dead_code)] // Silencing warning, this enum may be used by other crates
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub enum ThreatActionType {
         KillAndQuarantine,
@@ -607,7 +608,6 @@ pub mod worker_instance {
     use crate::jsonrpc::{Jsonrpc, RPCMessage};
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::worker::threat_handling::ThreatHandler;
-    use crate::Logging;
 
     pub trait IOMsgPostProcessor {
         fn postprocess(&mut self, iomsg: &mut IOMessage, precord: &ProcessRecord);
@@ -717,6 +717,9 @@ pub mod worker_instance {
         process_record_handler: Option<Box<dyn ProcessRecordIOHandler + 'a>>,
         exepath_handler: Box<dyn Exepath>,
         iomsg_postprocessors: Vec<Box<dyn IOMsgPostProcessor>>,
+        // --- ADDED: Field to hold the AVIntegration instance ---
+        #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+        av_integration: Option<crate::av_integration::AVIntegration<'a>>,
     }
 
     impl<'a> Worker<'a> {
@@ -727,6 +730,9 @@ pub mod worker_instance {
 				process_record_handler: None,
 				exepath_handler: Box::<ExepathLive>::default(),
 				iomsg_postprocessors: vec![],
+                // --- ADDED: Initialize new field ---
+                #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+                av_integration: None,
 			}
 		}
 
@@ -748,11 +754,21 @@ pub mod worker_instance {
             self
         }
 
+
+
         pub fn register_iomsg_postprocessor(
             mut self,
             postprecessor: Box<dyn IOMsgPostProcessor>,
         ) -> Worker<'a> {
             self.iomsg_postprocessors.push(postprecessor);
+            self
+        }
+
+        // --- ADDED: Builder method to set the AVIntegration instance ---
+        #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+        #[allow(dead_code)] // Silencing warning, this builder method is used externally
+        pub fn av_integration(mut self, av_integration: Option<crate::av_integration::AVIntegration<'a>>) -> Worker<'a> {
+            self.av_integration = av_integration;
             self
         }
 
@@ -767,32 +783,25 @@ pub mod worker_instance {
 				process_record_handler: Some(Box::new(ProcessRecordHandlerReplay::new(config))),
 				exepath_handler: Box::<ExePathReplay>::default(),
 				iomsg_postprocessors: vec![],
+                // --- ADDED: Initialize new field (None for replay) ---
+                #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+                av_integration: None,
 			}
 		}
 
         pub fn process_io(&mut self, iomsg: &mut IOMessage) {
             self.register_precord(iomsg);
             if let Some(precord) = self.process_records.get_precord_mut_by_gid(iomsg.gid) {
-                // Get AVIntegration from global if hydradragon feature is enabled
+                // Get AVIntegration from self if hydradragon feature is enabled
                 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
                 {
-                    use crate::{HYDRA_DRAGON_INTEGRATION, HYDRA_DRAGON_ENABLED};
-                    
-                    if *HYDRA_DRAGON_ENABLED {
-                        if let Some(av_mutex) = HYDRA_DRAGON_INTEGRATION.as_ref() {
-                            match av_mutex.lock() {
-                                Ok(mut av_integration) => {
-                                    precord.add_irp_record(iomsg, Some(&mut *av_integration));
-                                }
-                                Err(e) => {
-                                    Logging::error(&format!("Failed to lock AVIntegration mutex: {}", e));
-                                    precord.add_irp_record(iomsg, None);
-                                }
-                            }
-                        } else {
-                            precord.add_irp_record(iomsg, None);
-                        }
+                    // --- MODIFIED: Use self.av_integration field ---
+                    // This removes the need for the global static and fixes the import error.
+                    if let Some(av_integration) = self.av_integration.as_mut() {
+                        // Pass the mutable reference to AVIntegration
+                        precord.add_irp_record(iomsg, Some(av_integration));
                     } else {
+                        // No AVIntegration instance available
                         precord.add_irp_record(iomsg, None);
                     }
                 }

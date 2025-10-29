@@ -211,15 +211,18 @@ impl ConfigReader {
     }
 
     #[cfg(target_os = "windows")]
+    #[allow(dead_code)]
     pub fn read_params(params: Vec<String>, location: &str, _bloc: &str) -> HashMap<String, String> {
         Self::read_params_from_registry(params, location)
     }
 
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     pub fn read_params(params: Vec<String>, location: &str, bloc: &str) -> HashMap<String, String> {
         Self::read_params_from_file(params, location, bloc)
     }
 
+    #[allow(dead_code)]
     pub fn read_param_from_file(param: &str, location: &str, bloc: &str) -> String  {
         //"/etc/owlyshield/owlyshield.conf"
         let mut config = Ini::new();
@@ -238,6 +241,7 @@ impl ConfigReader {
             .to_string()
     }
 
+    #[allow(dead_code)]
     fn read_params_from_file(params: Vec<String>, location: &str, bloc: &str) -> HashMap<String, String> {
         let mut ret: HashMap<String, String> = HashMap::new();
         let mut config = Ini::new();

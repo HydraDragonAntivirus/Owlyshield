@@ -34,11 +34,20 @@ use crate::connectors::register::Connectors;
 #[cfg(target_os = "windows")]
 use crate::driver_com::Driver;
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-use std::{env, path::Path, sync::{LazyLock, Mutex}};
+use std::{env, path::Path, sync::LazyLock}; // <-- MODIFIED: Removed unused Mutex
 
 // Conditionally compile AVIntegration `use` statement
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+#[path = "windows/av_integration.rs"]
+pub mod av_integration;
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
 use crate::av_integration::AVIntegration;
+
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
+use crate::config::Config;
+
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
+use crate::worker::predictor::PredictorMalware;
 
 
 // Conditionally compile the HYDRA_DRAGON_ENABLED static variable
@@ -49,16 +58,53 @@ pub static HYDRA_DRAGON_ENABLED: LazyLock<bool> = LazyLock::new(|| {
         .unwrap_or(false)
 });
 
-// Conditionally compile the HYDRA_DRAGON_INTEGRATION static variable
+// --- ADDED: Static config to provide 'static lifetime ---
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-pub static HYDRA_DRAGON_INTEGRATION: LazyLock<Option<Mutex<AVIntegration>>> = LazyLock::new(|| {
+pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {
+    Config::new()
+});
+
+/* --- REMOVED: Static HYDRA_DRAGON_INTEGRATION ---
+ * This static block caused error E0277 because AVIntegration (containing TFLite's NonNull pointer)
+ * is not `Send`, but the static Mutex required it to be.
+ * The `init_hydra_dragon` function below is the correct way to create this instance.
+ *
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
+pub static HYDRA_DRAGON_INTEGRATION: LazyLock<Option<Mutex<AVIntegration<'static>>>> = LazyLock::new(|| {
     if *HYDRA_DRAGON_ENABLED {
-        // Directly initialize the AVIntegration when HydraDragon is present.
-        Some(Mutex::new(AVIntegration::new()))
+        // Use the static CONFIG. This provides the 'static lifetime.
+        let config: &'static Config = &CONFIG;
+        let predictor_malware = PredictorMalware::new(config);
+        let av_integration = AVIntegration::new(config, predictor_malware);
+        Some(Mutex::new(av_integration)) // Wrap in Mutex for safe access
     } else {
         None
     }
 });
+*/
+
+
+/// Initialize AVIntegration at runtime instead of in a `static`
+/// Returns `Some(AVIntegration)` when HydraDragon is present, or `None` otherwise.
+///
+/// IMPORTANT: Do not put `AVIntegration` into a `static Mutex` — the underlying TF-Lite
+/// model uses raw pointers (NonNull) that are not `Send/Sync` and will fail `static` requirements.
+/// Call this function inside the thread that will use the integration (for example inside `run::run()`).
+#[cfg(all(target_os = "windows", feature = "hydradragon"))]
+pub fn init_hydra_dragon() -> Option<AVIntegration<'static>> {
+    if *HYDRA_DRAGON_ENABLED {
+        // Construct the Config and Predictor locally, then build AVIntegration.
+        // Use the static CONFIG to provide the 'static lifetime.
+        let config: &'static Config = &CONFIG;
+        let predictor_malware = PredictorMalware::new(config);
+        Some(AVIntegration::new(config, predictor_malware))
+    } else {
+        None
+    }
+}
+
+/*
+*/
 
 #[cfg(target_os = "windows")]
 use crate::driver_com::CDriverMsgs;
@@ -70,9 +116,6 @@ use crate::worker::process_record_handling::{ExepathLive, ProcessRecordHandlerLi
 use crate::worker::worker_instance::{IOMsgPostProcessorMqtt, IOMsgPostProcessorRPC, IOMsgPostProcessorWriter, Worker};
 
 mod actions_on_kill;
-// Conditionally compile the av_integration module
-#[cfg(all(target_os = "windows", feature = "hydradragon"))]
-mod av_integration;
 mod config;
 mod connectors;
 mod csvwriter;

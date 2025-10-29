@@ -359,7 +359,7 @@ impl IOMessage {
 }
 
 impl CDriverMsgs<'_> {
-    pub fn new(irp: &ReplyIrp) -> CDriverMsgs {
+    pub fn new(irp: &ReplyIrp) -> CDriverMsgs<'_> {
         CDriverMsgs {
             drivermsgs: irp.unpack_drivermsg(),
             index: 0,

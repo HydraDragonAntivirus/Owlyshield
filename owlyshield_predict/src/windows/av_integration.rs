@@ -25,12 +25,16 @@ use crate::logging::Logging;
 use crate::actions_on_kill::{ActionsOnKill, ThreatInfo};
 use crate::config::Config;
 use crate::worker::predictor::PredictorMalware;
+use chrono::Utc;
+use crate::shared_def::IOMessage;
 
 // --- Pipe names (single source of truth) ---
+#[allow(dead_code)] // Silencing warning, this pipe may be used by the external AV client
 const PIPE_AV_TO_EDR: &str = r"\\.\pipe\Global\hydradragon_to_owlyshield";
 const PIPE_EDR_TO_AV: &str = r"\\.\pipe\Global\owlyshield_to_hydradragon";
 
 const BUFFER_SIZE: u32 = 8192;
+#[allow(dead_code)] // Silencing warning, this is used by the (currently) unused send_threat_to_edr
 const CONNECT_TIMEOUT_MS: u32 = 900_000; // 900s - adjust as needed
 
 /// Action to take when a threat is detected
@@ -38,7 +42,7 @@ const CONNECT_TIMEOUT_MS: u32 = 900_000; // 900s - adjust as needed
 pub enum ThreatAction {
     #[serde(rename = "kill_and_quarantine")]
     KillAndQuarantine,
-    #[serde(rename = "kil")]
+    #[serde(rename = "kill")]
     Kill,
 }
 
@@ -52,7 +56,7 @@ impl ThreatAction {
     pub fn as_str(&self) -> &str {
         match self {
             ThreatAction::KillAndQuarantine => "kill_and_quarantine",
-            ThreatAction::Kill => "O",
+            ThreatAction::Kill => "kill",
         }
     }
 }
@@ -95,17 +99,17 @@ pub struct AVScanResponse {
 }
 
 /// Integration struct — keeps internal channel & listener thread
-pub struct AVIntegration {
-    config: Config,
-    predictor_malware: PredictorMalware,
+pub struct AVIntegration<'a> {
+    config: &'a Config, // <-- MODIFIED: Now a borrow
+    predictor_malware: PredictorMalware<'a>,
     scan_request_rx: Receiver<EDRScanRequest>,
     internal_scan_tx: Sender<EDRScanRequest>,
     _scan_request_handle: thread::JoinHandle<()>,
 }
 
-impl AVIntegration {
+impl<'a> AVIntegration<'a> {
     /// Create new AVIntegration instance
-    pub fn new(config: Config, predictor_malware: PredictorMalware) -> Self {
+    pub fn new(config: &'a Config, predictor_malware: PredictorMalware<'a>) -> Self { // <-- MODIFIED: Takes a borrow
         let (internal_scan_tx, scan_request_rx) = channel::<EDRScanRequest>();
         let tx_clone = internal_scan_tx.clone();
         
@@ -114,7 +118,7 @@ impl AVIntegration {
         });
 
         AVIntegration {
-            config,
+            config, // <-- MODIFIED: Assigns the borrow
             predictor_malware,
             scan_request_rx,
             internal_scan_tx,
@@ -140,7 +144,6 @@ impl AVIntegration {
             "Malware"
         };
 
-        // Create the detailed ThreatInfo struct
         let threat_info = ThreatInfo {
             threat_type_label: threat_label,
             virus_name: if event.virus_name.is_empty() { 
@@ -151,7 +154,6 @@ impl AVIntegration {
             prediction: prediction_behavioural,
         };
 
-        // Log the action with details
         match event.action_required {
             ThreatAction::Kill => {
                 Logging::info(&format!(
@@ -175,11 +177,8 @@ impl AVIntegration {
             }
         }
 
-        // Run post-kill actions
-        // NOTE: The actual driver kill command happens via Connectors inside ActionsOnKill
-        // The Connectors trait should be updated to pass the action type to the kernel driver
         ActionsOnKill::new().run_actions_with_info(
-            &self.config,
+            self.config, // config is a borrow, this works
             precord,
             &self.predictor_malware.predictor_behavioural.mlp.timesteps,
             &threat_info,
@@ -189,18 +188,7 @@ impl AVIntegration {
     /// Main loop to handle queued threat events
     pub fn handle_event_loop(&self) {
         loop {
-            // This is a placeholder - you need to implement your event queue
-            // if let Some(event) = self.event_queue.lock().unwrap().pop_front() {
-            //     let prediction_behavioural = self
-            //         .predictor_malware
-            //         .predictor_behavioural
-            //         .mlp
-            //         .predict(&event.features);
-            //
-            //     let precord = ProcessRecord::from_event(&event);
-            //     self.process_threat_action(&event, &precord, prediction_behavioural);
-            // }
-
+            // Placeholder: integrate event queue or pipe-based event reading later
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
     }
@@ -209,9 +197,25 @@ impl AVIntegration {
     pub fn try_receive_scan_request(&self) -> Option<EDRScanRequest> {
         self.scan_request_rx.try_recv().ok()
     }
+
+    /// Called by kernel/event handling to queue internal requests (no external client)
+    pub fn queue_file_event(&mut self, iomsg: &IOMessage, precord: &ProcessRecord) {
+        let request = EDRScanRequest {
+            event_type: "NEW_IO_EVENT".to_string(),
+            file_path: precord.exepath.to_string_lossy().to_string(),
+            timestamp: Utc::now().to_rfc3339(),
+            pid: Some(iomsg.pid),
+            additional_context: Some(format!("Event triggered by GID: {}", precord.gid)),
+        };
+
+        if let Err(e) = self.internal_scan_tx.send(request) {
+            Logging::error(&format!("Failed to send internal scan request: {}", e));
+        }
+    }
 }
 
 /// AV -> EDR client (one-shot): connect to AV->EDR pipe and write threat event
+#[allow(dead_code)] // Silencing warning, this function is likely called by the external AV component
 fn send_threat_to_edr(event: AVThreatEvent) -> Result<(), String> {
     unsafe {
         let pipe_name_c =

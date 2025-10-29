@@ -12,6 +12,7 @@ const FILE_ID_LEN: usize = 16;
 const FILE_ID_LEN: usize = 32;
 
 /// See [`IOMessage`] struct. Used with [`crate::shared_def::IrpMajorOp::IrpSetInfo`]
+#[allow(non_local_definitions)]
 #[derive(FromPrimitive)]
 pub enum FileChangeInfo {
     ChangeNotSet,
@@ -27,7 +28,9 @@ pub enum FileChangeInfo {
 }
 
 /// See [`IOMessage`] struct.
+#[allow(non_local_definitions)]
 #[derive(FromPrimitive)]
+#[allow(dead_code)]
 pub enum FileLocationInfo {
     NotProtected,
     Protected,
@@ -132,7 +135,7 @@ impl FileId {
 ///     * `FILE_OPEN_DIRECTORY` (1)
 ///     * `FILE_CHANGE_WRITE` (2)
 ///     * `FILE_CHANGE_NEW_FILE` (3)
-///     * `FILE_CHANGE_RENAME_FILE` (4)
+///     * `FILE_CHANGE_RENAME_FILE` (44)
 ///     * `FILE_CHANGE_EXTENSION_CHANGED` (5)
 ///     * `FILE_CHANGE_DELETE_FILE` (6)
 ///     * `FILE_CHANGE_DELETE_NEW_FILE` (7)
