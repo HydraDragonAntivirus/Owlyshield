@@ -2,25 +2,70 @@ use std::path::Path;
 #[cfg(feature = "service")]
 use std::ptr::null_mut;
 
-// use log::error;
+use crate::config::{Config, Param};
+use crate::Logging;
+
 #[cfg(feature = "service")]
 use widestring::{U16CString, U16String};
 #[cfg(feature = "service")]
 use windows::core::{PCWSTR, PWSTR};
 #[cfg(feature = "service")]
-use windows::Win32::Foundation::{CloseHandle, GetLastError, BOOL, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, BOOL};
 #[cfg(feature = "service")]
 use windows::Win32::Security::{
     DuplicateTokenEx, SecurityIdentification, TokenPrimary, SECURITY_ATTRIBUTES, TOKEN_ALL_ACCESS,
 };
 #[cfg(feature = "service")]
-use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
+use windows::Win32::System::RemoteDesktop::{
+    WTSActive, WTSEnumerateSessionsW, WTSFreeMemory, 
+    WTSGetActiveConsoleSessionId, WTSQueryUserToken
+};
 #[cfg(feature = "service")]
-use windows::Win32::System::Threading::{CREATE_NEW_CONSOLE, CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW};
+use windows::Win32::System::Threading::{
+    CREATE_NEW_CONSOLE, CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    STARTUPINFOW,
+};
 
+#[cfg(feature = "service")]
+fn str_to_pcwstr(str: &str) -> U16CString {
+    U16CString::from_str(str).unwrap()
+}
 
-use crate::config::{Config, Param};
-use crate::Logging;
+#[cfg(feature = "service")]
+fn str_to_pwstr(str: &str) -> U16String {
+    U16String::from_str(str)
+}
+
+#[cfg(feature = "service")]
+unsafe fn get_active_user_token() -> Option<HANDLE> {
+    // Try the standard active console session first
+    let session_id = WTSGetActiveConsoleSessionId();
+    if session_id != u32::MAX {
+        let mut token = HANDLE(0);
+        if WTSQueryUserToken(session_id, &mut token).as_bool() {
+            return Some(token);
+        }
+    }
+
+    // Fall back to enumerating all sessions
+    let mut p_sessions = null_mut();
+    let mut count = 0u32;
+    if WTSEnumerateSessionsW(None, 0, 1, &mut p_sessions, &mut count).as_bool() {
+        let sessions = std::slice::from_raw_parts(p_sessions, count as usize);
+        for s in sessions {
+            if s.State == WTSActive {
+                let mut token = HANDLE(0);
+                if WTSQueryUserToken(s.SessionId, &mut token).as_bool() {
+                    WTSFreeMemory(p_sessions as *mut _);
+                    return Some(token);
+                }
+            }
+        }
+        WTSFreeMemory(p_sessions as *mut _);
+    }
+
+    None
+}
 
 #[cfg(feature = "service")]
 pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), String> {
@@ -31,6 +76,7 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
         .parent()
         .unwrap()
         .join("logo.ico");
+
     let toastapp_args = format!(
         " \"Owlyshield\" \"{}\" \"{}\" \"{}\" \"{}\"",
         message,
@@ -40,57 +86,68 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
     );
 
     let mut error_msg = String::new();
-
     let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
     unsafe {
-        let sessionid = WTSGetActiveConsoleSessionId();
-        let mut service_token = HANDLE(0);
-        let mut token = HANDLE(0);
-        if WTSQueryUserToken(sessionid, std::ptr::addr_of_mut!(service_token)).as_bool() {
-            if !DuplicateTokenEx(
-                service_token,
-                TOKEN_ALL_ACCESS,
-                Some(null_mut() as *mut SECURITY_ATTRIBUTES),
-                SecurityIdentification,
-                TokenPrimary,
-                &mut token,
-            )
-            .as_bool()
-            {
-                CloseHandle(service_token);
-                // error!("Toast(): cannot duplicate token");
-                Logging::error("Toast(): cannot duplicate token");
-                return Err("Toast(): cannot duplicate token".to_string());
-            }
+        let maybe_token = get_active_user_token();
+
+        if maybe_token.is_none() {
+            Logging::warning("Toast(): no active user session found, skipping toast notification");
+            return Ok(());
+        }
+
+        let service_token = maybe_token.unwrap();
+        let mut primary_token = HANDLE(0);
+
+        if !DuplicateTokenEx(
+            service_token,
+            TOKEN_ALL_ACCESS,
+            Some(null_mut() as *mut SECURITY_ATTRIBUTES),
+            SecurityIdentification,
+            TokenPrimary,
+            &mut primary_token,
+        )
+        .as_bool()
+        {
             CloseHandle(service_token);
-            if !CreateProcessAsUserW(
-                token,
-                PCWSTR(str_to_pcwstr(toastapp_path.to_str().unwrap()).into_raw()),
-                PWSTR(str_to_pwstr(&toastapp_args).into_vec().as_mut_ptr()),
-                None,
-                None,
-                BOOL(0),
-                PROCESS_CREATION_FLAGS(CREATE_NEW_CONSOLE.0),
-                Some(null_mut()),
-                PCWSTR(str_to_pcwstr(toastapp_dir.to_str().unwrap()).into_raw()),
-                std::ptr::addr_of_mut!(si),
-                std::ptr::addr_of_mut!(pi),
-            )
-            .as_bool()
-            {
-                // error!("Toast(): cannot launch process: {}", GetLastError().0);
-                error_msg = format!("Toast(): cannot query user token: {}", GetLastError().0);
-                Logging::error(error_msg.as_str());
-            }
-            CloseHandle(token);
-        } else {
-            // error!("Toast(): cannot query user token: {}", GetLastError().0);
-            error_msg = format!("Toast(): cannot query user token: {}", GetLastError().0);
+            error_msg = format!(
+                "Toast(): cannot duplicate token: {}",
+                GetLastError().0
+            );
+            Logging::error(error_msg.as_str());
+            return Err(error_msg);
+        }
+
+        CloseHandle(service_token);
+
+        if !CreateProcessAsUserW(
+            primary_token,
+            PCWSTR(str_to_pcwstr(toastapp_path.to_str().unwrap()).as_ptr()),
+            PWSTR(str_to_pwstr(&toastapp_args).as_mut_ptr()),
+            None,
+            None,
+            BOOL(0),
+            PROCESS_CREATION_FLAGS(CREATE_NEW_CONSOLE.0),
+            Some(null_mut()),
+            PCWSTR(str_to_pcwstr(toastapp_dir.to_str().unwrap()).as_ptr()),
+            &mut si,
+            &mut pi,
+        )
+        .as_bool()
+        {
+            error_msg = format!(
+                "Toast(): failed to create process: {}",
+                GetLastError().0
+            );
             Logging::error(error_msg.as_str());
         }
+
+        CloseHandle(primary_token);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
     }
+
     if error_msg.is_empty() {
         Ok(())
     } else {
@@ -108,6 +165,7 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
         .parent()
         .unwrap()
         .join("logo.ico");
+
     let toastapp_args = [
         "Owlyshield",
         message,
@@ -120,15 +178,6 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
         .args(toastapp_args)
         .output()
         .expect("failed to execute process");
+
     Ok(())
-}
-
-#[cfg(feature = "service")]
-fn str_to_pcwstr(str: &str) -> U16CString {
-    U16CString::from_str(str).unwrap()
-}
-
-#[cfg(feature = "service")]
-fn str_to_pwstr(str: &str) -> U16String {
-    U16String::from_str(str)
 }
