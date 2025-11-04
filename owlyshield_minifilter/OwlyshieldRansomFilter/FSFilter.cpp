@@ -153,6 +153,7 @@ Return Value:
     }
     driverData->setFilterStart();
     DbgPrint("loaded scanner successfully");
+    // Initialize ZwQueryInformationProcess BEFORE using it
     if (ZwQueryInformationProcess == NULL)
     {
         UNICODE_STRING routineName = RTL_CONSTANT_STRING(L"ZwQueryInformationProcess");
@@ -162,8 +163,11 @@ Return Value:
         if (ZwQueryInformationProcess == NULL)
         {
             DbgPrint("Cannot resolve ZwQueryInformationProcess\n");
-            hr = STATUS_UNSUCCESSFUL;
-            return;
+            CommClose();
+            FltUnregisterFilter(driverData->getFilter());
+            delete driverData;
+            delete commHandle;
+            return STATUS_UNSUCCESSFUL;
         }
     }
     // new code
