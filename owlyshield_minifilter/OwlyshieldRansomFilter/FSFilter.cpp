@@ -153,6 +153,19 @@ Return Value:
     }
     driverData->setFilterStart();
     DbgPrint("loaded scanner successfully");
+    if (ZwQueryInformationProcess == NULL)
+    {
+        UNICODE_STRING routineName = RTL_CONSTANT_STRING(L"ZwQueryInformationProcess");
+
+        ZwQueryInformationProcess = (QUERY_INFO_PROCESS)MmGetSystemRoutineAddress(&routineName);
+
+        if (ZwQueryInformationProcess == NULL)
+        {
+            DbgPrint("Cannot resolve ZwQueryInformationProcess\n");
+            hr = STATUS_UNSUCCESSFUL;
+            return;
+        }
+    }
     // new code
     // FIXME: check status and release in unload
     PsSetCreateProcessNotifyRoutine(AddRemProcessRoutine, FALSE);
@@ -1125,19 +1138,6 @@ VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create)
     if (Create)
     {
         NTSTATUS hr;
-        if (ZwQueryInformationProcess == NULL)
-        {
-            UNICODE_STRING routineName = RTL_CONSTANT_STRING(L"ZwQueryInformationProcess");
-
-            ZwQueryInformationProcess = (QUERY_INFO_PROCESS)MmGetSystemRoutineAddress(&routineName);
-
-            if (ZwQueryInformationProcess == NULL)
-            {
-                DbgPrint("Cannot resolve ZwQueryInformationProcess\n");
-                hr = STATUS_UNSUCCESSFUL;
-                return;
-            }
-        }
         HANDLE procHandleParent;
         HANDLE procHandleProcess;
 
