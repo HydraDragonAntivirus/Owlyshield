@@ -104,14 +104,12 @@ BOOLEAN
 FSIsFileNameInScanDirs(CONST PUNICODE_STRING path);
 
 // ZwQueryInformationProcess - dynamic loaded function which query info data about already opened processes
-typedef NTSTATUS (*QUERY_INFO_PROCESS)(
-    __in HANDLE ProcessHandle,
-    __in PROCESSINFOCLASS ProcessInformationClass,
-    __out_bcount(ProcessInformationLength) PVOID ProcessInformation,
-    __in ULONG ProcessInformationLength,
-    __out_opt PULONG ReturnLength);
+typedef NTSTATUS (*QUERY_INFO_PROCESS)(__in HANDLE ProcessHandle, __in PROCESSINFOCLASS ProcessInformationClass,
+                                       __out_bcount(ProcessInformationLength) PVOID ProcessInformation,
+                                       __in ULONG ProcessInformationLength, __out_opt PULONG ReturnLength);
 
-QUERY_INFO_PROCESS ZwQueryInformationProcess;
+// DECLARE (but don't define) the variable - use extern
+extern QUERY_INFO_PROCESS ZwQueryInformationProcess;
 
 // copy the file id info from the data argument (FLT_CALLBACK_DATA) to DRIVER_MESSAGE class allocated
 NTSTATUS

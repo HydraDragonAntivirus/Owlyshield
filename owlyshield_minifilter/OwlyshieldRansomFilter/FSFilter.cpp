@@ -20,6 +20,8 @@ Environment:
 
 //  Structure that contains all the global data structures used throughout the driver.
 
+QUERY_INFO_PROCESS ZwQueryInformationProcess = NULL;
+
 EXTERN_C_START
 
 NTSTATUS
@@ -1100,6 +1102,13 @@ static NTSTATUS GetProcessNameByHandle(_In_ HANDLE ProcessHandle, _Out_ PUNICODE
     ULONG pniSize = 512;
     PUNICODE_STRING pni = NULL;
     NTSTATUS status = STATUS_UNSUCCESSFUL;
+
+    // Safety check
+    if (ZwQueryInformationProcess == NULL)
+    {
+        DbgPrint("!!! FSFilter: CRITICAL - ZwQueryInformationProcess is NULL!\n");
+        return STATUS_UNSUCCESSFUL;
+    }
 
     do
     {
