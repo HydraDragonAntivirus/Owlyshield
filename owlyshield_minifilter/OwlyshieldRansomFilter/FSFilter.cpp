@@ -1001,11 +1001,13 @@ FSEntrySetFileName(CONST PFLT_VOLUME Volume, PFLT_FILE_NAME_INFORMATION nameInfo
     USHORT volumeNameSize = nameInfo->Volume.Length; // in bytes
     USHORT origNameSize = nameInfo->Name.Length;     // in bytes
 
-    WCHAR newTemp[40];
+    // --- START: MODIFICATION ---
 
+    // Use a local variable for the volume's DOS name.
     UNICODE_STRING volumeData;
-    volumeData.MaximumLength = 80;
-    volumeData.Buffer = newTemp;
+    WCHAR volumeBuffer[40]; // Buffer for the DOS name (e.g., "C:")
+    volumeData.MaximumLength = sizeof(volumeBuffer);
+    volumeData.Buffer = volumeBuffer;
     volumeData.Length = 0;
 
     hr = FltGetDiskDeviceObject(Volume, &devObject);
@@ -1013,19 +1015,30 @@ FSEntrySetFileName(CONST PFLT_VOLUME Volume, PFLT_FILE_NAME_INFORMATION nameInfo
     {
         return hr;
     }
-    /*if (KeAreAllApcsDisabled()) {
-        return hr;
-    }*/
 
+    // This check is important to avoid making a kernel call that can't succeed at high IRQL
     if (!KeAreAllApcsDisabled())
     {
-        hr = IoVolumeDeviceToDosName(devObject, &GvolumeData);
+        hr = IoVolumeDeviceToDosName(devObject, &volumeData);
     }
-    volumeDosNameSize = GvolumeData.Length;
-    finalNameSize = origNameSize - volumeNameSize + volumeDosNameSize; // not null terminated, in bytes
+    else
+    {
+        // Handle the case where the call cannot be made, perhaps by failing
+        // or using a fallback. For now, we'll assume failure.
+        hr = STATUS_UNSUCCESSFUL;
+    }
 
-    // DbgPrint("Volume name: %wZ, Size: %d, finalNameSize: %d, volumeNameSize: %d\n", volumeData, volumeDosNameSize,
-    // finalNameSize, volumeNameSize); DbgPrint("Name buffer: %wZ\n", nameInfo->Name);
+    if (!NT_SUCCESS(hr))
+    {
+        ObDereferenceObject(devObject);
+        return hr;
+    }
+
+    volumeDosNameSize = volumeData.Length;
+
+    // --- END: MODIFICATION ---
+
+    finalNameSize = origNameSize - volumeNameSize + volumeDosNameSize;
 
     if (uString == NULL)
     {
@@ -1038,10 +1051,9 @@ FSEntrySetFileName(CONST PFLT_VOLUME Volume, PFLT_FILE_NAME_INFORMATION nameInfo
         return RtlUnicodeStringCopy(uString, &nameInfo->Name);
     }
 
-    if (NT_SUCCESS(hr = RtlUnicodeStringCopy(uString, &GvolumeData)))
-    { // prefix of volume e.g. C:
-
-        // DbgPrint("File name: %wZ\n", uString);
+    // Use the local 'volumeData' instead of the global 'GvolumeData'
+    if (NT_SUCCESS(hr = RtlUnicodeStringCopy(uString, &volumeData)))
+    {
         RtlCopyMemory(uString->Buffer + (volumeDosNameSize / 2), nameInfo->Name.Buffer + (volumeNameSize / 2),
                       ((finalNameSize - volumeDosNameSize > MAX_FILE_NAME_SIZE - volumeDosNameSize)
                            ? (MAX_FILE_NAME_SIZE - volumeDosNameSize)
