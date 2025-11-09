@@ -93,47 +93,36 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
     unsafe {
-        // Retry logic: wait up to 30 seconds for an active user session
-        const MAX_RETRIES: u32 = 10;
+        // Retry logic: wait indefinitely for an active user session
         const RETRY_DELAY_MS: u64 = 3000; // 3 seconds between retries
         
         let mut maybe_token = None;
+        let mut attempt = 0u32;
         
-        for attempt in 0..MAX_RETRIES {
+        loop {
             maybe_token = get_active_user_token();
             
             if maybe_token.is_some() {
                 Logging::info(&format!(
-                    "Toast(): Active user session found on attempt {}/{}",
-                    attempt + 1,
-                    MAX_RETRIES
+                    "Toast(): Active user session found after {} attempts",
+                    attempt + 1
                 ));
                 break;
             }
             
             if attempt == 0 {
                 Logging::warning("Toast(): no active user session found, waiting for user login...");
-            } else {
+            } else if attempt % 10 == 0 {
+                // Log every 10th attempt (every 30 seconds) to avoid log spam
                 Logging::debug(&format!(
-                    "Toast(): Retry {}/{} - still no active user session",
+                    "Toast(): Still waiting for user session (attempt {}, {} seconds elapsed)",
                     attempt + 1,
-                    MAX_RETRIES
+                    (attempt as u64 * RETRY_DELAY_MS) / 1000
                 ));
             }
             
-            if attempt < MAX_RETRIES - 1 {
-                thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-            }
-        }
-
-        if maybe_token.is_none() {
-            let msg = format!(
-                "Toast(): no active user session found after {} attempts ({} seconds), skipping toast notification",
-                MAX_RETRIES,
-                (MAX_RETRIES as u64 * RETRY_DELAY_MS) / 1000
-            );
-            Logging::warning(&msg);
-            return Ok(());
+            attempt += 1;
+            thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
         }
 
         let service_token = maybe_token.unwrap();
