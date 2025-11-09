@@ -96,18 +96,17 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
         // Retry logic: wait indefinitely for an active user session
         const RETRY_DELAY_MS: u64 = 3000; // 3 seconds between retries
         
-        let mut maybe_token = None;
         let mut attempt = 0u32;
         
-        loop {
-            maybe_token = get_active_user_token();
+        let service_token = loop {
+            let maybe_token = get_active_user_token();
             
-            if maybe_token.is_some() {
+            if let Some(token) = maybe_token {
                 Logging::info(&format!(
                     "Toast(): Active user session found after {} attempts",
                     attempt + 1
                 ));
-                break;
+                break token;
             }
             
             if attempt == 0 {
@@ -123,9 +122,8 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
             
             attempt += 1;
             thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-        }
+        };
 
-        let service_token = maybe_token.unwrap();
         let mut primary_token = HANDLE(0);
 
         if !DuplicateTokenEx(
