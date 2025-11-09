@@ -20,7 +20,8 @@ Environment:
 
 //  Structure that contains all the global data structures used throughout the driver.
 
-QUERY_INFO_PROCESS ZwQueryInformationProcess = NULL;
+// FIX: Make this volatile to prevent compiler optimizations that could cause issues
+volatile QUERY_INFO_PROCESS ZwQueryInformationProcess = NULL;
 
 EXTERN_C_START
 
@@ -99,7 +100,7 @@ Return Value:
     NTSTATUS status;
 
     //
-    // --- FIX: Initialize required function pointers FIRST. ---
+    // --- FIX: Initialize required function pointers FIRST and verify. ---
     //
     if (ZwQueryInformationProcess == NULL)
     {
@@ -110,6 +111,15 @@ Return Value:
         if (ZwQueryInformationProcess == NULL)
         {
             DbgPrint("Cannot resolve ZwQueryInformationProcess. Driver will not load.\n");
+            return STATUS_UNSUCCESSFUL;
+        }
+
+        // FIX: Add a small delay and re-verify to ensure it's properly set
+        KeStallExecutionProcessor(100); // 100 microseconds
+
+        if (ZwQueryInformationProcess == NULL)
+        {
+            DbgPrint("ZwQueryInformationProcess became NULL after initialization. Driver will not load.\n");
             return STATUS_UNSUCCESSFUL;
         }
     }
@@ -172,9 +182,29 @@ Return Value:
     driverData->setFilterStart();
 
     //
-    // Register the process notification callback AFTER all dependencies are initialized.
+    // FIX: Register the process notification callback AFTER all dependencies are initialized
+    // and double-check ZwQueryInformationProcess is still valid.
     //
-    PsSetCreateProcessNotifyRoutine(AddRemProcessRoutine, FALSE);
+    if (ZwQueryInformationProcess == NULL)
+    {
+        DbgPrint("!!! FSFilter: CRITICAL - ZwQueryInformationProcess is NULL before callback registration!\n");
+        CommClose();
+        FltUnregisterFilter(driverData->getFilter());
+        delete driverData;
+        delete commHandle;
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    status = PsSetCreateProcessNotifyRoutine(AddRemProcessRoutine, FALSE);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("!!! FSFilter: Failed to register process notify routine: %#010x\n", status);
+        CommClose();
+        FltUnregisterFilter(driverData->getFilter());
+        delete driverData;
+        delete commHandle;
+        return status;
+    }
 
     DbgPrint("loaded scanner successfully");
     return STATUS_SUCCESS;
@@ -1117,8 +1147,11 @@ static NTSTATUS GetProcessNameByHandle(_In_ HANDLE ProcessHandle, _Out_ PUNICODE
     PUNICODE_STRING pni = NULL;
     NTSTATUS status = STATUS_UNSUCCESSFUL;
 
-    // Safety check
-    if (ZwQueryInformationProcess == NULL)
+    // FIX: Create a local copy of the function pointer to avoid race conditions
+    QUERY_INFO_PROCESS localZwQueryInformationProcess = ZwQueryInformationProcess;
+
+    // FIX: Enhanced safety check with local copy
+    if (localZwQueryInformationProcess == NULL)
     {
         DbgPrint("!!! FSFilter: CRITICAL - ZwQueryInformationProcess is NULL!\n");
         return STATUS_UNSUCCESSFUL;
@@ -1129,7 +1162,8 @@ static NTSTATUS GetProcessNameByHandle(_In_ HANDLE ProcessHandle, _Out_ PUNICODE
         pni = (PUNICODE_STRING)ExAllocatePoolWithTag(NonPagedPool, pniSize, 'RW');
         if (pni != NULL)
         {
-            status = ZwQueryInformationProcess(ProcessHandle, ProcessImageFileName, pni, pniSize, &retLength);
+            // FIX: Use local copy instead of global variable
+            status = localZwQueryInformationProcess(ProcessHandle, ProcessImageFileName, pni, pniSize, &retLength);
             if (!NT_SUCCESS(status))
             {
                 ExFreePoolWithTag(pni, 'RW');
@@ -1160,13 +1194,22 @@ NTSTATUS DeleteFileByPath(PUNICODE_STRING FilePath)
 // new code process recording
 VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create)
 {
-    if (commHandle->CommClosed)
+    // FIX: Add early safety check for commHandle
+    if (commHandle == NULL || commHandle->CommClosed)
         return;
+
+    // FIX: Additional safety check for ZwQueryInformationProcess before any usage
+    if (ZwQueryInformationProcess == NULL)
+    {
+        DbgPrint("!!! FSFilter: Cannot process notification - ZwQueryInformationProcess is NULL\n");
+        return;
+    }
+
     if (Create)
     {
         NTSTATUS hr;
-        HANDLE procHandleParent;
-        HANDLE procHandleProcess;
+        HANDLE procHandleParent = NULL;
+        HANDLE procHandleProcess = NULL;
 
         CLIENT_ID clientIdParent;
         clientIdParent.UniqueProcess = ParentId;
@@ -1183,51 +1226,45 @@ VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create)
         hr = ZwOpenProcess(&procHandleParent, PROCESS_ALL_ACCESS, &objAttribs, &clientIdParent);
         if (!NT_SUCCESS(hr))
         {
-            DbgPrint("!!! FSFilter: Failed to open process: %#010x.\n", hr);
+            DbgPrint("!!! FSFilter: Failed to open parent process: %#010x.\n", hr);
             return;
         }
         hr = ZwOpenProcess(&procHandleProcess, PROCESS_ALL_ACCESS, &objAttribs, &clientIdProcess);
         if (!NT_SUCCESS(hr))
         {
             DbgPrint("!!! FSFilter: Failed to open process: %#010x.\n", hr);
-            hr = ZwClose(procHandleParent);
-            if (!NT_SUCCESS(hr))
-            {
-                DbgPrint("!!! FSFilter: Failed to close process: %#010x.\n", hr);
-                return;
-            }
+            ZwClose(procHandleParent);
             return;
         }
 
-        PUNICODE_STRING procName;
-        PUNICODE_STRING parentName;
+        PUNICODE_STRING procName = NULL;
+        PUNICODE_STRING parentName = NULL;
+
         hr = GetProcessNameByHandle(procHandleParent, &parentName);
         if (!NT_SUCCESS(hr))
         {
             DbgPrint("!!! FSFilter: Failed to get parent name: %#010x\n", hr);
+            ZwClose(procHandleParent);
+            ZwClose(procHandleProcess);
             return;
         }
+
         hr = GetProcessNameByHandle(procHandleProcess, &procName);
         if (!NT_SUCCESS(hr))
         {
             DbgPrint("!!! FSFilter: Failed to get process name: %#010x\n", hr);
+            if (parentName != NULL)
+                ExFreePoolWithTag(parentName, 'RW');
+            ZwClose(procHandleParent);
+            ZwClose(procHandleProcess);
             return;
         }
 
         DbgPrint("!!! FSFilter: New Process, parent: %wZ. Pid: %d\n", parentName, (ULONG)(ULONG_PTR)ParentId);
 
-        hr = ZwClose(procHandleParent);
-        if (!NT_SUCCESS(hr))
-        {
-            DbgPrint("!!! FSFilter: Failed to close process: %#010x.\n", hr);
-            return;
-        }
-        hr = ZwClose(procHandleProcess);
-        if (!NT_SUCCESS(hr))
-        {
-            DbgPrint("!!! FSFilter: Failed to close process: %#010x.\n", hr);
-            return;
-        }
+        ZwClose(procHandleParent);
+        ZwClose(procHandleProcess);
+
         DbgPrint("!!! FSFilter: New Process, process: %wZ , pid: %d.\n", procName, (ULONG)(ULONG_PTR)ProcessId);
 
         BOOLEAN found = FALSE;
@@ -1238,8 +1275,10 @@ VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create)
                     // resulted in safe are in windows dir
         {
             DbgPrint("!!! FSFilter: Open Process not recorded, both parent and process are safe\n");
-            delete parentName;
-            delete procName;
+            if (parentName != NULL)
+                ExFreePoolWithTag(parentName, 'RW');
+            if (procName != NULL)
+                ExFreePoolWithTag(procName, 'RW');
             return;
         }
         // options to reach: process is not safe (parent safe or not), process safe parent is not, both safe but before
@@ -1248,7 +1287,10 @@ VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create)
                  startsWith(procName, driverData->GetSystemRootPath()),
                  startsWith(parentName, driverData->GetSystemRootPath()));
         driverData->RecordNewProcess(procName, (ULONG)(ULONG_PTR)ProcessId, (ULONG)(ULONG_PTR)ParentId);
-        delete parentName;
+
+        if (parentName != NULL)
+            ExFreePoolWithTag(parentName, 'RW');
+        // Note: procName is managed by RecordNewProcess, don't free it here
     }
     else
     {
