@@ -99,15 +99,29 @@ Return Value:
     NTSTATUS status;
 
     //
+    // --- FIX: Initialize required function pointers FIRST. ---
+    //
+    if (ZwQueryInformationProcess == NULL)
+    {
+        UNICODE_STRING routineName = RTL_CONSTANT_STRING(L"ZwQueryInformationProcess");
+
+        ZwQueryInformationProcess = (QUERY_INFO_PROCESS)MmGetSystemRoutineAddress(&routineName);
+
+        if (ZwQueryInformationProcess == NULL)
+        {
+            DbgPrint("Cannot resolve ZwQueryInformationProcess. Driver will not load.\n");
+            return STATUS_UNSUCCESSFUL;
+        }
+    }
+
+    //
     //  Default to NonPagedPoolNx for non paged pool allocations where supported.
     //
-
     ExInitializeDriverRuntime(DrvRtPoolNxOptIn);
 
     //
     //  Register with filter manager.
     //
-
     driverData = new DriverData(DriverObject);
     if (driverData == NULL)
     {
@@ -127,6 +141,8 @@ Return Value:
     commHandle = new CommHandler(driverData->getFilter());
     if (commHandle == NULL)
     {
+        // Clean up FltRegisterFilter
+        FltUnregisterFilter(*FilterAdd);
         delete driverData;
         return STATUS_MEMORY_NOT_ALLOCATED;
     }
@@ -154,27 +170,13 @@ Return Value:
         return status;
     }
     driverData->setFilterStart();
-    DbgPrint("loaded scanner successfully");
-    // Initialize ZwQueryInformationProcess BEFORE using it
-    if (ZwQueryInformationProcess == NULL)
-    {
-        UNICODE_STRING routineName = RTL_CONSTANT_STRING(L"ZwQueryInformationProcess");
 
-        ZwQueryInformationProcess = (QUERY_INFO_PROCESS)MmGetSystemRoutineAddress(&routineName);
-
-        if (ZwQueryInformationProcess == NULL)
-        {
-            DbgPrint("Cannot resolve ZwQueryInformationProcess\n");
-            CommClose();
-            FltUnregisterFilter(driverData->getFilter());
-            delete driverData;
-            delete commHandle;
-            return STATUS_UNSUCCESSFUL;
-        }
-    }
-    // new code
-    // FIXME: check status and release in unload
+    //
+    // Register the process notification callback AFTER all dependencies are initialized.
+    //
     PsSetCreateProcessNotifyRoutine(AddRemProcessRoutine, FALSE);
+
+    DbgPrint("loaded scanner successfully");
     return STATUS_SUCCESS;
 }
 
