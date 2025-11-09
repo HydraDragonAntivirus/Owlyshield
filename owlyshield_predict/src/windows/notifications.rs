@@ -103,11 +103,22 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
             maybe_token = get_active_user_token();
             
             if maybe_token.is_some() {
+                Logging::info(&format!(
+                    "Toast(): Active user session found on attempt {}/{}",
+                    attempt + 1,
+                    MAX_RETRIES
+                ));
                 break;
             }
             
             if attempt == 0 {
                 Logging::warning("Toast(): no active user session found, waiting for user login...");
+            } else {
+                Logging::debug(&format!(
+                    "Toast(): Retry {}/{} - still no active user session",
+                    attempt + 1,
+                    MAX_RETRIES
+                ));
             }
             
             if attempt < MAX_RETRIES - 1 {
@@ -116,7 +127,12 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
         }
 
         if maybe_token.is_none() {
-            Logging::warning("Toast(): no active user session found after waiting, skipping toast notification");
+            let msg = format!(
+                "Toast(): no active user session found after {} attempts ({} seconds), skipping toast notification",
+                MAX_RETRIES,
+                (MAX_RETRIES as u64 * RETRY_DELAY_MS) / 1000
+            );
+            Logging::warning(&msg);
             return Ok(());
         }
 
@@ -144,6 +160,8 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
 
         CloseHandle(service_token);
 
+        Logging::debug("Toast(): Creating process as user...");
+
         if !CreateProcessAsUserW(
             primary_token,
             PCWSTR(str_to_pcwstr(toastapp_path.to_str().unwrap()).as_ptr()),
@@ -164,6 +182,8 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
                 GetLastError().0
             );
             Logging::error(error_msg.as_str());
+        } else {
+            Logging::info("Toast(): Notification process created successfully");
         }
 
         CloseHandle(primary_token);
