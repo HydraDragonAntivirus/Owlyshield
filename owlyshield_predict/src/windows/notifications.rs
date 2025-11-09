@@ -69,6 +69,9 @@ unsafe fn get_active_user_token() -> Option<HANDLE> {
 
 #[cfg(feature = "service")]
 pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), String> {
+    use std::thread;
+    use std::time::Duration;
+    
     let toastapp_dir = Path::new(&config[Param::UtilsPath]);
     let toastapp_path = toastapp_dir.join("RustWindowsToast.exe");
     let app_id = &config[Param::AppId];
@@ -90,10 +93,30 @@ pub fn notify(config: &Config, message: &str, report_path: &str) -> Result<(), S
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
     unsafe {
-        let maybe_token = get_active_user_token();
+        // Retry logic: wait up to 30 seconds for an active user session
+        const MAX_RETRIES: u32 = 10;
+        const RETRY_DELAY_MS: u64 = 3000; // 3 seconds between retries
+        
+        let mut maybe_token = None;
+        
+        for attempt in 0..MAX_RETRIES {
+            maybe_token = get_active_user_token();
+            
+            if maybe_token.is_some() {
+                break;
+            }
+            
+            if attempt == 0 {
+                Logging::warning("Toast(): no active user session found, waiting for user login...");
+            }
+            
+            if attempt < MAX_RETRIES - 1 {
+                thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+            }
+        }
 
         if maybe_token.is_none() {
-            Logging::warning("Toast(): no active user session found, skipping toast notification");
+            Logging::warning("Toast(): no active user session found after waiting, skipping toast notification");
             return Ok(());
         }
 
