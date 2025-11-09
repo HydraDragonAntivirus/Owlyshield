@@ -4,15 +4,15 @@
 
 Module Name:
 
-	FsFilter.h
+    FsFilter.h
 
 Abstract:
-	
-	Header file for the kernel FS driver
+
+    Header file for the kernel FS driver
 
 Environment:
 
-	Kernel mode
+    Kernel mode
 
 --*/
 
@@ -33,70 +33,43 @@ Environment:
 // FSUnloadDriver(_In_ FLT_FILTER_UNLOAD_FLAGS Flags);
 
 FLT_POSTOP_CALLBACK_STATUS
-FSPostOperation(
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_opt_ PVOID CompletionContext,
-    _In_ FLT_POST_OPERATION_FLAGS Flags);
+FSPostOperation(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltObjects,
+                _In_opt_ PVOID CompletionContext, _In_ FLT_POST_OPERATION_FLAGS Flags);
 
 FLT_PREOP_CALLBACK_STATUS
-FSPreOperation(
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext);
+FSPreOperation(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltObjects,
+               _Flt_CompletionContext_Outptr_ PVOID *CompletionContext);
 
 NTSTATUS
-FSInstanceSetup(
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_SETUP_FLAGS Flags,
-    _In_ DEVICE_TYPE VolumeDeviceType,
-    _In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType);
+FSInstanceSetup(_In_ PCFLT_RELATED_OBJECTS FltObjects, _In_ FLT_INSTANCE_SETUP_FLAGS Flags,
+                _In_ DEVICE_TYPE VolumeDeviceType, _In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType);
 
 NTSTATUS
-FSInstanceQueryTeardown(
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_QUERY_TEARDOWN_FLAGS Flags);
+FSInstanceQueryTeardown(_In_ PCFLT_RELATED_OBJECTS FltObjects, _In_ FLT_INSTANCE_QUERY_TEARDOWN_FLAGS Flags);
 
-VOID FSInstanceTeardownStart(
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_TEARDOWN_FLAGS Flags);
+VOID FSInstanceTeardownStart(_In_ PCFLT_RELATED_OBJECTS FltObjects, _In_ FLT_INSTANCE_TEARDOWN_FLAGS Flags);
 
-VOID FSInstanceTeardownComplete(
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ FLT_INSTANCE_TEARDOWN_FLAGS Flags);
+VOID FSInstanceTeardownComplete(_In_ PCFLT_RELATED_OBJECTS FltObjects, _In_ FLT_INSTANCE_TEARDOWN_FLAGS Flags);
 
 // handles pre operation for read, write, set info and close files
 NTSTATUS
-FSProcessPreOperartion(
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext);
+FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltObjects,
+                       _Flt_CompletionContext_Outptr_ PVOID *CompletionContext);
 
 NTSTATUS
-FSEntrySetFileName(
-    const PFLT_VOLUME volume,
-    PFLT_FILE_NAME_INFORMATION nameInfo,
-    PUNICODE_STRING uString);
+FSEntrySetFileName(const PFLT_VOLUME volume, PFLT_FILE_NAME_INFORMATION nameInfo, PUNICODE_STRING uString);
 
 FLT_POSTOP_CALLBACK_STATUS
-FSProcessPostReadIrp(
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_opt_ PVOID CompletionContext,
-    _In_ FLT_POST_OPERATION_FLAGS Flags);
+FSProcessPostReadIrp(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltObjects,
+                     _In_opt_ PVOID CompletionContext, _In_ FLT_POST_OPERATION_FLAGS Flags);
 
 FLT_POSTOP_CALLBACK_STATUS
-FSProcessPostReadSafe(
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_opt_ PVOID CompletionContext,
-    _In_ FLT_POST_OPERATION_FLAGS Flags);
+FSProcessPostReadSafe(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltObjects,
+                      _In_opt_ PVOID CompletionContext, _In_ FLT_POST_OPERATION_FLAGS Flags);
 
 // handles IRP_MJ_CREATE irps on post op
 FLT_POSTOP_CALLBACK_STATUS
-FSProcessCreateIrp(
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects);
+FSProcessCreateIrp(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltObjects);
 
 // compares unicode string file name to the directories in protected areas in driverData object
 // return true if the file is in one of the dirs
@@ -108,8 +81,9 @@ typedef NTSTATUS (*QUERY_INFO_PROCESS)(__in HANDLE ProcessHandle, __in PROCESSIN
                                        __out_bcount(ProcessInformationLength) PVOID ProcessInformation,
                                        __in ULONG ProcessInformationLength, __out_opt PULONG ReturnLength);
 
-// DECLARE (but don't define) the variable - use extern
-extern QUERY_INFO_PROCESS ZwQueryInformationProcess;
+// FIX: Declare as extern volatile to match the definition in the .c file
+// This ensures the compiler knows this is shared across compilation units and prevents optimization issues
+extern volatile QUERY_INFO_PROCESS ZwQueryInformationProcess;
 
 // copy the file id info from the data argument (FLT_CALLBACK_DATA) to DRIVER_MESSAGE class allocated
 NTSTATUS
@@ -117,10 +91,8 @@ CopyFileIdInfo(_Inout_ PFLT_CALLBACK_DATA Data, PDRIVER_MESSAGE newItem);
 
 // recieves a pointer to allocated unicode string, FLT_RELATED_OBJECTS and FILE_NAME_INFORMATION class.
 // function gets the file name from the name info and flt objects and fill the unicode string with it
-NTSTATUS GetFileNameInfo(
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    PUNICODE_STRING FilePath,
-    PFLT_FILE_NAME_INFORMATION nameInfo);
+NTSTATUS GetFileNameInfo(_In_ PCFLT_RELATED_OBJECTS FltObjects, PUNICODE_STRING FilePath,
+                         PFLT_FILE_NAME_INFORMATION nameInfo);
 
 // copy extension info from FILE_NAME_INFORMATION class to null terminated wchar string
 VOID CopyExtension(PWCHAR dest, PFLT_FILE_NAME_INFORMATION nameInfo);
@@ -132,4 +104,7 @@ VOID CopyExtension(PWCHAR dest, PFLT_FILE_NAME_INFORMATION nameInfo);
 
 VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create);
 
+// FIX: This global variable should be removed or properly managed
+// Global variables in drivers should be avoided when possible
+// If needed, it should be properly initialized and synchronized
 UNICODE_STRING GvolumeData;
