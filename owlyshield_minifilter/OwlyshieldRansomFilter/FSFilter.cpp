@@ -1295,63 +1295,6 @@ VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create)
     else
     {
         DbgPrint("!!! FSFilter: Terminate Process, Process: %d pid\n", (ULONG)(ULONG_PTR)ProcessId);
-
-        //
-        // ** NEW CODE TO DELETE THE EXECUTABLE OF THE TERMINATED PROCESS **
-        //
-        NTSTATUS hr;
-        HANDLE procHandle = NULL;
-        OBJECT_ATTRIBUTES objAttribs;
-        CLIENT_ID clientId;
-        PUNICODE_STRING procName = NULL;
-
-        clientId.UniqueProcess = ProcessId;
-        clientId.UniqueThread = 0;
-
-        InitializeObjectAttributes(&objAttribs, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-
-        // It might not be possible to open a handle to a process that is far along
-        // in termination, but we will attempt it.
-        hr = ZwOpenProcess(&procHandle, PROCESS_ALL_ACCESS, &objAttribs, &clientId);
-
-        if (NT_SUCCESS(hr))
-        {
-            // Get the full path of the process's executable.
-            hr = GetProcessNameByHandle(procHandle, &procName);
-
-            if (NT_SUCCESS(hr) && procName != NULL && procName->Length > 0)
-            {
-                DbgPrint("!!! FSFilter: Terminated process path: %wZ. Attempting to delete.\n", procName);
-
-                // Attempt to delete the file. This may fail if the system still holds a lock.
-                NTSTATUS deleteStatus = DeleteFileByPath(procName);
-
-                if (NT_SUCCESS(deleteStatus))
-                {
-                    DbgPrint("!!! FSFilter: Successfully deleted file %wZ.\n", procName);
-                }
-                else
-                {
-                    DbgPrint("!!! FSFilter: Failed to delete file %wZ. Status: 0x%X\n", procName, deleteStatus);
-                }
-
-                // Free the memory allocated by GetProcessNameByHandle
-                ExFreePoolWithTag(procName, 'RW');
-            }
-            else
-            {
-                DbgPrint("!!! FSFilter: Could not get process name for PID %p. Status: 0x%X\n", ProcessId, hr);
-            }
-
-            // Clean up the handle
-            ZwClose(procHandle);
-        }
-        else
-        {
-            DbgPrint("!!! FSFilter: Could not open handle to terminating process PID %p. Status: 0x%X\n", ProcessId,
-                     hr);
-        }
-
         driverData->RemoveProcess((ULONG)(ULONG_PTR)ProcessId);
     }
 }
