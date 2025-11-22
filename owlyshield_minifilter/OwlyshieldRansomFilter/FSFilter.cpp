@@ -23,6 +23,9 @@ Environment:
 // FIX: Make this volatile to prevent compiler optimizations that could cause issues
 volatile QUERY_INFO_PROCESS ZwQueryInformationProcess = NULL;
 
+// Global variable definition
+UNICODE_STRING GvolumeData;
+
 EXTERN_C_START
 
 NTSTATUS
@@ -1140,7 +1143,7 @@ VOID CopyExtension(PWCHAR dest, PFLT_FILE_NAME_INFORMATION nameInfo)
     }
 }
 
-static NTSTATUS GetProcessNameByHandle(_In_ HANDLE ProcessHandle, _Out_ PUNICODE_STRING *Name)
+NTSTATUS GetProcessNameByHandle(_In_ HANDLE ProcessHandle, _Out_ PUNICODE_STRING *Name)
 {
     ULONG retLength = 0;
     ULONG pniSize = 512;

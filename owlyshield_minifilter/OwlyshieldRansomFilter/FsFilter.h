@@ -104,11 +104,12 @@ VOID CopyExtension(PWCHAR dest, PFLT_FILE_NAME_INFORMATION nameInfo);
 
 VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create);
 
-// Quarantine functions
+// Process and quarantine functions
+NTSTATUS GetProcessNameByHandle(_In_ HANDLE ProcessHandle, _Out_ PUNICODE_STRING *Name);
 NTSTATUS DeleteFileByPath(PUNICODE_STRING FilePath);
 NTSTATUS QuarantineFileByPath(PUNICODE_STRING FilePath);
 
 // FIX: This global variable should be removed or properly managed
 // Global variables in drivers should be avoided when possible
 // If needed, it should be properly initialized and synchronized
-UNICODE_STRING GvolumeData;
+extern UNICODE_STRING GvolumeData;

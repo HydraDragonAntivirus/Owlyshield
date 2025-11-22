@@ -1,4 +1,5 @@
 #include "Communication.h"
+#include "FsFilter.h"
 
 NTSTATUS InitCommData(
 
