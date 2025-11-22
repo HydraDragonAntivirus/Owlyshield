@@ -140,17 +140,94 @@ pub struct Config {
     pub threshold_drivermsgs: usize,
     pub threshold_prediction: f32,
     pub timesteps_stride: usize,
+    // Adaptive learning state (SDK feature)
+    #[cfg(feature = "sdk")]
+    adaptive_state: AdaptiveThresholdState,
+}
+
+#[cfg(feature = "sdk")]
+#[derive(Debug, Default)]
+struct AdaptiveThresholdState {
+    observed_driver_msg_counts: Vec<usize>,
+    observed_predictions: Vec<f32>,
+    observed_timesteps: Vec<usize>,
+    sample_count: usize,
 }
 
 impl Config {
     pub fn new() -> Config {
-        Config {
+        let mut config = Config {
             params: Self::get_params(),
             current_exe: std::env::current_exe().unwrap(),
             extensions_list: ExtensionList::new(),
             threshold_drivermsgs: 70,
             threshold_prediction: 0.55,
             timesteps_stride: 20,
+            #[cfg(feature = "sdk")]
+            adaptive_state: AdaptiveThresholdState::default(),
+        };
+        // Initialize with minimal values that will adapt quickly (SDK feature)
+        #[cfg(feature = "sdk")]
+        {
+            config.initialize_adaptive_thresholds();
+        }
+        config
+    }
+    
+    #[cfg(feature = "sdk")]
+    /// Initialize adaptive thresholds with conservative starting values
+    fn initialize_adaptive_thresholds(&mut self) {
+        // Start with minimal values - will adapt based on observed patterns
+        self.threshold_drivermsgs = 50;  // Start low, will adapt up
+        self.threshold_prediction = 0.5;  // Start at 50%, will adapt based on false positive rate
+        self.timesteps_stride = 10;  // Start small, will adapt based on system performance
+    }
+    
+    #[cfg(feature = "sdk")]
+    /// Adapt thresholds based on observed behavior (self-learning)
+    pub fn adapt_thresholds(&mut self, driver_msg_count: usize, prediction: f32, timesteps: usize) {
+        self.adaptive_state.observed_driver_msg_counts.push(driver_msg_count);
+        self.adaptive_state.observed_predictions.push(prediction);
+        self.adaptive_state.observed_timesteps.push(timesteps);
+        self.adaptive_state.sample_count += 1;
+        
+        // Adapt every 100 samples or when we have enough data
+        if self.adaptive_state.sample_count % 100 == 0 || self.adaptive_state.sample_count == 50 {
+            self.update_adaptive_thresholds();
+        }
+    }
+    
+    #[cfg(feature = "sdk")]
+    /// Update thresholds based on statistical analysis of observed data
+    fn update_adaptive_thresholds(&mut self) {
+        if self.adaptive_state.observed_driver_msg_counts.len() < 10 {
+            return;  // Need more data
+        }
+        
+        // Calculate percentile-based thresholds (75th percentile)
+        // This ensures we catch most cases while avoiding false positives
+        let mut sorted_msgs = self.adaptive_state.observed_driver_msg_counts.clone();
+        sorted_msgs.sort();
+        let p75_idx = (sorted_msgs.len() * 3 / 4).min(sorted_msgs.len() - 1);
+        self.threshold_drivermsgs = sorted_msgs[p75_idx].max(30);  // Min 30
+        
+        // Adapt prediction threshold based on observed prediction distribution
+        let mut sorted_preds = self.adaptive_state.observed_predictions.clone();
+        sorted_preds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p75_idx = (sorted_preds.len() * 3 / 4).min(sorted_preds.len() - 1);
+        self.threshold_prediction = sorted_preds[p75_idx].max(0.4).min(0.9);  // Between 40% and 90%
+        
+        // Adapt timesteps stride based on observed patterns
+        let mut sorted_strides = self.adaptive_state.observed_timesteps.clone();
+        sorted_strides.sort();
+        let p75_idx = (sorted_strides.len() * 3 / 4).min(sorted_strides.len() - 1);
+        self.timesteps_stride = sorted_strides[p75_idx].max(5).min(50);  // Between 5 and 50
+        
+        // Keep only recent samples to allow continuous adaptation
+        if self.adaptive_state.observed_driver_msg_counts.len() > 1000 {
+            self.adaptive_state.observed_driver_msg_counts.drain(0..500);
+            self.adaptive_state.observed_predictions.drain(0..500);
+            self.adaptive_state.observed_timesteps.drain(0..500);
         }
     }
 

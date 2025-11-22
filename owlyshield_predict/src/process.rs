@@ -175,6 +175,70 @@ pub struct ProcessRecord {
 }
 
 impl ProcessRecord {
+    /// Create a new ProcessRecord with minimal initialization
+    #[cfg_attr(feature = "sdk", doc = " (for testing/SDK use)")]
+    pub fn new(gid: u64, appname: String, exepath: PathBuf) -> ProcessRecord {
+        let (tx, rx) = mpsc::channel::<Clusters>();
+
+        ProcessRecord {
+            appname,
+            gid,
+            pids: HashSet::new(),
+            ops_read: 0,
+            ops_setinfo: 0,
+            ops_written: 0,
+            ops_open: 0,
+            bytes_read: 0,
+            bytes_written: 0,
+            entropy_read: 0.0,
+            entropy_written: 0.0,
+            files_read: HashSet::new(),
+            files_renamed: HashSet::new(),
+            files_opened: HashSet::new(),
+            files_written: HashSet::new(),
+            files_deleted: HashSet::new(),
+            fpaths_created: HashSet::new(),
+            fpaths_updated: HashSet::new(),
+            dirs_with_files_created: HashSet::new(),
+            dirs_with_files_updated: HashSet::new(),
+            dirs_with_files_opened: HashSet::new(),
+            extensions_read: ExtensionsCount::new(),
+            extensions_written: ExtensionsCount::new(),
+            exepath,
+            exe_exists: true,
+            process_state: ProcessState::Running,
+            is_malicious: false,
+            time_started: SystemTime::now(),
+            time_killed: None,
+            driver_msg_count: 0,
+            dirs_content: DirectoriesContent::new(),
+            clusters: Vec::new(),
+            tx,
+            rx,
+            is_thread_clustering_running: false,
+            last_thread_clustering_time: SystemTime::now(),
+            last_thread_clustering_duration: Duration::ZERO,
+            file_size_empty: HashSet::new(),
+            file_size_tiny: HashSet::new(),
+            file_size_small: HashSet::new(),
+            file_size_medium: HashSet::new(),
+            file_size_large: HashSet::new(),
+            file_size_huge: HashSet::new(),
+            bytes_size_empty: Vec::new(),
+            bytes_size_tiny: Vec::new(),
+            bytes_size_small: Vec::new(),
+            bytes_size_medium: Vec::new(),
+            bytes_size_large: Vec::new(),
+            bytes_size_huge: Vec::new(),
+            time_suspended: None,
+            on_shared_drive_read_count: 0,
+            on_shared_drive_write_count: 0,
+            on_removable_drive_read_count: 0,
+            on_removable_drive_write_count: 0,
+            time: SystemTime::now(),
+        }
+    }
+
     pub fn from(iomsg: &IOMessage, appname: String, exepath: PathBuf) -> ProcessRecord {
         let (tx, rx) = mpsc::channel::<Clusters>();
 

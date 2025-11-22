@@ -148,6 +148,8 @@ mod watchlist;
 mod whitelist;
 mod worker;
 mod novelty;
+#[cfg(feature = "sdk")]
+pub mod sdk;  // OwlyShield SDK for behavioral analysis
 #[cfg(target_os = "windows")]
 #[path = "windows/threathandling.rs"]
 mod threathandling;
