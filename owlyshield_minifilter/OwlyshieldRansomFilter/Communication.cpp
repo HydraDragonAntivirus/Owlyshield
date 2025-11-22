@@ -157,6 +157,7 @@ NTSTATUS KillProcessesInGid(ULONGLONG GID, PLONG OutputStatus, BOOLEAN enableQua
 
             OBJECT_ATTRIBUTES objAttribs;
             NTSTATUS exitStatus = STATUS_FAIL_CHECK;
+            PUNICODE_STRING exePath = NULL;
 
             DbgPrint("!!! FS : Attempt to terminate pid: %lu from gid: %llu (quarantine: %s)\n", Buffer[i], GID,
                      enableQuarantine ? "YES" : "NO");
@@ -172,17 +173,48 @@ NTSTATUS KillProcessesInGid(ULONGLONG GID, PLONG OutputStatus, BOOLEAN enableQua
                 continue;
             }
 
+            // Get the executable path BEFORE killing (important!)
+            if (enableQuarantine)
+            {
+                NTSTATUS pathStatus = GetProcessNameByHandle(processHandle, &exePath);
+                if (NT_SUCCESS(pathStatus) && exePath != NULL && exePath->Length > 0)
+                {
+                    DbgPrint("!!! FS : Quarantine target: %wZ\n", exePath);
+                }
+                else
+                {
+                    DbgPrint("!!! FS : Warning: Could not get exe path for PID %lu (Status: 0x%X)\n", Buffer[i], pathStatus);
+                }
+            }
+
             status = ZwTerminateProcess(processHandle, exitStatus);
             if (!NT_SUCCESS(status))
             {
                 *OutputStatus = STATUS_FAIL_CHECK;
                 DbgPrint("!!! FS : Failed to kill process %lu, reason: %d\n", Buffer[i], status);
                 NtClose(processHandle);
+                if (exePath != NULL)
+                    ExFreePoolWithTag(exePath, 'RW');
                 continue;
             }
 
             NtClose(processHandle);
             DbgPrint("!!! FS : Termination of pid: %lu from gid: %llu succeeded\n", Buffer[i], GID);
+
+            // Now quarantine the file if requested (move to isolated folder)
+            if (enableQuarantine && exePath != NULL)
+            {
+                NTSTATUS quarantineStatus = QuarantineFileByPath(exePath);
+                if (NT_SUCCESS(quarantineStatus))
+                {
+                    DbgPrint("!!! FS : Successfully quarantined file: %wZ\n", exePath);
+                }
+                else
+                {
+                    DbgPrint("!!! FS : Failed to quarantine file %wZ. Status: 0x%X\n", exePath, quarantineStatus);
+                }
+                ExFreePoolWithTag(exePath, 'RW');
+            }
         }
     }
 

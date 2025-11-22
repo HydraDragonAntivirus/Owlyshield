@@ -1191,6 +1191,123 @@ NTSTATUS DeleteFileByPath(PUNICODE_STRING FilePath)
     return ZwDeleteFile(&objAttributes);
 }
 
+// Quarantine a file by moving it to an isolated folder
+NTSTATUS QuarantineFileByPath(PUNICODE_STRING FilePath)
+{
+    NTSTATUS status;
+    HANDLE sourceHandle = NULL;
+    HANDLE destHandle = NULL;
+    OBJECT_ATTRIBUTES objAttribs;
+    IO_STATUS_BLOCK ioStatus;
+
+    // Define quarantine path for HydraDragon
+    UNICODE_STRING quarantineDir;
+    RtlInitUnicodeString(&quarantineDir, L"\\??\\C:\\Program Files\\HydraDragonAntivirus\\Quarantine");
+
+    // Create quarantine directory if it doesn't exist
+    InitializeObjectAttributes(&objAttribs, &quarantineDir,
+                              OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    status = ZwCreateFile(&destHandle,
+                         GENERIC_WRITE | SYNCHRONIZE,
+                         &objAttribs,
+                         &ioStatus,
+                         NULL,
+                         FILE_ATTRIBUTE_DIRECTORY,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         FILE_OPEN_IF,
+                         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+                         NULL,
+                         0);
+
+    if (destHandle != NULL)
+        ZwClose(destHandle);
+
+    // Open the source file
+    InitializeObjectAttributes(&objAttribs, FilePath,
+                              OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    status = ZwOpenFile(&sourceHandle,
+                       DELETE | SYNCHRONIZE,
+                       &objAttribs,
+                       &ioStatus,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                       FILE_SYNCHRONOUS_IO_NONALERT);
+
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("!!! FSFilter: Failed to open file for quarantine: 0x%X\n", status);
+        return status;
+    }
+
+    // Extract filename from full path
+    USHORT filenameOffset = 0;
+    for (USHORT i = FilePath->Length / sizeof(WCHAR); i > 0; i--)
+    {
+        if (FilePath->Buffer[i - 1] == L'\\')
+        {
+            filenameOffset = i;
+            break;
+        }
+    }
+
+    // Build destination path: C:\Quarantine\<filename>
+    WCHAR destPathBuffer[512];
+    UNICODE_STRING destPath;
+    destPath.Buffer = destPathBuffer;
+    destPath.MaximumLength = sizeof(destPathBuffer);
+    destPath.Length = 0;
+
+    RtlAppendUnicodeStringToString(&destPath, &quarantineDir);
+
+    UNICODE_STRING backslash;
+    RtlInitUnicodeString(&backslash, L"\\");
+    RtlAppendUnicodeStringToString(&destPath, &backslash);
+
+    UNICODE_STRING filename;
+    filename.Buffer = &FilePath->Buffer[filenameOffset];
+    filename.Length = FilePath->Length - (filenameOffset * sizeof(WCHAR));
+    filename.MaximumLength = filename.Length;
+    RtlAppendUnicodeStringToString(&destPath, &filename);
+
+    // Prepare rename information
+    ULONG renameInfoSize = sizeof(FILE_RENAME_INFORMATION) + destPath.Length;
+    PFILE_RENAME_INFORMATION renameInfo = (PFILE_RENAME_INFORMATION)
+        ExAllocatePoolWithTag(NonPagedPool, renameInfoSize, 'RW');
+
+    if (renameInfo == NULL)
+    {
+        ZwClose(sourceHandle);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    renameInfo->ReplaceIfExists = TRUE;
+    renameInfo->RootDirectory = NULL;
+    renameInfo->FileNameLength = destPath.Length;
+    RtlCopyMemory(renameInfo->FileName, destPath.Buffer, destPath.Length);
+
+    // Move the file to quarantine
+    status = ZwSetInformationFile(sourceHandle,
+                                 &ioStatus,
+                                 renameInfo,
+                                 renameInfoSize,
+                                 FileRenameInformation);
+
+    ExFreePoolWithTag(renameInfo, 'RW');
+    ZwClose(sourceHandle);
+
+    if (NT_SUCCESS(status))
+    {
+        DbgPrint("!!! FSFilter: File quarantined to: %wZ\n", &destPath);
+    }
+    else
+    {
+        DbgPrint("!!! FSFilter: Failed to quarantine file: 0x%X\n", status);
+    }
+
+    return status;
+}
+
 // new code process recording
 VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create)
 {
