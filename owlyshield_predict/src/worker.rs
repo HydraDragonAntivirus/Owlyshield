@@ -286,7 +286,13 @@ pub mod process_record_handling {
                 if prediction_behavioural > self.config.threshold_prediction
                     || precord.appname.contains("TEST-OLRANSOM")
                 {
-                    println!("Ransomware Suspected!!!"); 
+                    Logging::debug(&format!(
+                        "MALWARE DETECTED - {} (gid: {}) | Prediction: {:.4} | Threshold: {:.4} | Files opened: {} | Files written: {} | Driver msgs: {}",
+                        precord.appname, precord.gid,
+                        prediction_behavioural, self.config.threshold_prediction,
+                        precord.files_opened.len(), precord.files_written.len(), precord.driver_msg_count
+                    ));
+                    println!("Ransomware Suspected!!!");
                     eprintln!("precord.gid = {:?}", precord.gid);
                     println!("{}", precord.appname);
                     println!("with {prediction_behavioural} certainty");
@@ -338,6 +344,12 @@ pub mod process_record_handling {
                 if prediction_behavioural > self.config.threshold_prediction
                     || precord.appname.contains("TEST-OLRANSOM")
                 {
+                    Logging::debug(&format!(
+                        "MALWARE DETECTED - {} (gid: {}) | Prediction: {:.4} | Threshold: {:.4} | Files opened: {} | Files written: {} | Driver msgs: {}",
+                        precord.appname, precord.gid,
+                        prediction_behavioural, self.config.threshold_prediction,
+                        precord.files_opened.len(), precord.files_written.len(), precord.driver_msg_count
+                    ));
                     println!("Ransomware Suspected!!!");
                     eprintln!("precord.gid = {:?}", precord.gid);
                     println!("{}", precord.appname);
