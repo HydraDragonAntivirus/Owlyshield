@@ -298,16 +298,27 @@ STATUS_FLT_DO_NOT_ATTACH - do not attach
     hr = FltGetDiskDeviceObject(FltObjects->Volume, &devObject);
     if (!NT_SUCCESS(hr))
     {
+        // Not a disk device - skip attachment (e.g., named pipes, network shares)
         return STATUS_SUCCESS;
-        // return hr;
     }
+
+    // BUGFIX: Validate device object before calling IoVolumeDeviceToDosName
+    // to avoid STATUS_OBJECT_NAME_NOT_FOUND on non-disk volumes
+    if (!devObject)
+    {
+        return STATUS_SUCCESS;
+    }
+
     hr = IoVolumeDeviceToDosName(devObject, &GvolumeData);
     if (!NT_SUCCESS(hr))
     {
-        //	return STATUS_SUCCESS;
-
-        return hr;
+        // FIX: Return success instead of error for volumes without DOS names
+        // (network shares, named pipes, etc.) - we don't need to attach to these
+        ObDereferenceObject(devObject);
+        return STATUS_SUCCESS;
     }
+
+    ObDereferenceObject(devObject);
     return STATUS_SUCCESS;
 }
 
@@ -1048,7 +1059,14 @@ FSEntrySetFileName(CONST PFLT_VOLUME Volume, PFLT_FILE_NAME_INFORMATION nameInfo
     hr = FltGetDiskDeviceObject(Volume, &devObject);
     if (!NT_SUCCESS(hr))
     {
+        // Not a disk device - return error to skip
         return hr;
+    }
+
+    // BUGFIX: Validate device object exists
+    if (!devObject)
+    {
+        return STATUS_INVALID_PARAMETER;
     }
 
     // This check is important to avoid making a kernel call that can't succeed at high IRQL
@@ -1065,6 +1083,8 @@ FSEntrySetFileName(CONST PFLT_VOLUME Volume, PFLT_FILE_NAME_INFORMATION nameInfo
 
     if (!NT_SUCCESS(hr))
     {
+        // FIX: For non-disk volumes (pipes, network shares), this will fail with
+        // STATUS_OBJECT_NAME_NOT_FOUND - this is expected, just return the error
         ObDereferenceObject(devObject);
         return hr;
     }
