@@ -176,7 +176,7 @@ pub struct ProcessRecord {
 
 impl ProcessRecord {
     /// Create a new ProcessRecord with minimal initialization
-    #[cfg_attr(feature = "sdk", doc = " (for testing/SDK use)")]
+    #[cfg_attr(feature = "realtime_learning", doc = " (for testing/realtime_learning use)")]
     pub fn new(gid: u64, appname: String, exepath: PathBuf) -> ProcessRecord {
         let (tx, rx) = mpsc::channel::<Clusters>();
 

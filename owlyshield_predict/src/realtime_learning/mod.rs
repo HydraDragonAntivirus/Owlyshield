@@ -1,6 +1,6 @@
-//! OwlyShield SDK - Advanced Behavioral Analysis and Signature Detection
+//! OwlyShield Realtime Learning - Advanced Behavioral Analysis and Signature Detection
 //!
-//! This SDK provides comprehensive EDR/AV capabilities including:
+//! This module provides comprehensive EDR/AV capabilities including:
 //! - Dynamic behavioral signature detection
 //! - Machine learning data collection
 //! - Malware pattern matching (RAT, ransomware, spyware, etc.)
@@ -24,7 +24,7 @@ use crate::shared_def::IOMessage;
 use crate::process::ProcessRecord;
 use std::collections::HashMap;
 
-/// Main SDK interface for behavioral analysis
+/// Main realtime learning interface for behavioral analysis
 pub struct OwlyShieldSDK {
     /// Signature-based detection engine (optional - can be disabled for pure ML)
     pub signature_engine: Option<behavioral_signature::SignatureEngine>,
@@ -39,15 +39,17 @@ pub struct OwlyShieldSDK {
     /// API usage tracker per process
     api_trackers: HashMap<u64, ApiTracker>,
     /// Enable ML collection mode
+    #[allow(dead_code)]
     ml_mode_enabled: bool,
     /// Enable real-time learning mode
+    #[allow(dead_code)]
     realtime_learning_enabled: bool,
     /// Enable autonomous mode (next-gen)
     autonomous_mode_enabled: bool,
 }
 
 impl OwlyShieldSDK {
-    /// Create a new SDK instance
+    /// Create a new realtime learning instance
     ///
     /// # Arguments
     /// * `ml_mode_enabled` - Enable machine learning data collection mode
@@ -56,7 +58,7 @@ impl OwlyShieldSDK {
         Self::with_realtime_learning(ml_mode_enabled, false, malapi_json_path)
     }
 
-    /// Create SDK with real-time learning enabled
+    /// Create realtime learning with real-time learning enabled
     ///
     /// # Arguments
     /// * `ml_mode_enabled` - Enable machine learning data collection mode
@@ -89,7 +91,7 @@ impl OwlyShieldSDK {
         }
     }
 
-    /// Create NEXT-GEN SDK with autonomous learning (NO hardcoded rules!)
+    /// Create NEXT-GEN realtime learning with autonomous learning (NO hardcoded rules!)
     ///
     /// This mode:
     /// - NO user interaction required

@@ -2,7 +2,7 @@
 //!
 //! Detects malware based on specific combinations of API calls and behaviors
 
-use crate::sdk::api_tracker::ApiTracker;
+use crate::realtime_learning::api_tracker::ApiTracker;
 use crate::process::ProcessRecord;
 use serde::{Serialize, Deserialize};
 use std::collections::HashSet;
@@ -67,6 +67,7 @@ pub struct BehavioralSignature {
 /// Signature detection engine
 pub struct SignatureEngine {
     signatures: Vec<BehavioralSignature>,
+    #[allow(dead_code)]
     malapi_categories: MalApiCategories,
 }
 

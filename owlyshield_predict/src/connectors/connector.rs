@@ -9,6 +9,7 @@ use crate::process::ProcessRecord;
 /// Contains the methods of the [Connector] interface.
 pub trait Connector {
     /// Returns the name of the interface.
+    #[allow(dead_code)]
     fn to_string(&self) -> String;
     /// Actions on service startup
     fn on_startup(&self, config: &Config) -> Result<(), ConnectorError>;

@@ -6,8 +6,8 @@
 //! - Continuous learning from real-world EDR deployment
 //! - All thresholds and parameters adapt automatically
 
-use crate::sdk::api_tracker::ApiTracker;
-use crate::sdk::ml_collector::{MLCollector, MLSample};
+use crate::realtime_learning::api_tracker::ApiTracker;
+use crate::realtime_learning::ml_collector::MLCollector;
 use crate::process::ProcessRecord;
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
@@ -85,6 +85,7 @@ pub struct RealtimeLearningEngine {
     process_states: HashMap<u64, ProcessLearningState>,
 
     /// Processes pending collection (waiting to be labeled)
+    #[allow(dead_code)]
     pending_collection: HashSet<u64>,
 
     /// Statistics
@@ -110,7 +111,7 @@ impl RealtimeLearningEngine {
         let mut engine = RealtimeLearningEngine {
             config: LearningConfig::default(),
             collector: MLCollector::with_config(
-                crate::sdk::ml_collector::CollectionMode::Both,
+                crate::realtime_learning::ml_collector::CollectionMode::Both,
                 std::path::PathBuf::from(output_dir),
                 0,  // Will adapt automatically
             ),
@@ -139,7 +140,7 @@ impl RealtimeLearningEngine {
     pub fn with_config(config: LearningConfig, output_dir: &str) -> Self {
         RealtimeLearningEngine {
             collector: MLCollector::with_config(
-                crate::sdk::ml_collector::CollectionMode::Both,
+                crate::realtime_learning::ml_collector::CollectionMode::Both,
                 std::path::PathBuf::from(output_dir),
                 config.auto_save_interval,
             ),
@@ -178,7 +179,7 @@ impl RealtimeLearningEngine {
         }
     }
 
-    /// Mark process as detected malicious (by SDK)
+    /// Mark process as detected malicious (by realtime learning)
     pub fn mark_detected_malicious(&mut self, gid: u64, api_tracker: &ApiTracker, precord: &ProcessRecord) {
         if let Some(state) = self.process_states.get_mut(&gid) {
             state.detection_count += 1;
@@ -275,7 +276,7 @@ impl RealtimeLearningEngine {
     }
     
     /// Adapt benign thresholds based on observed process patterns (self-learning)
-    fn adapt_benign_thresholds(&mut self, api_trackers: &HashMap<u64, ApiTracker>, process_records: &HashMap<u64, ProcessRecord>) {
+    fn adapt_benign_thresholds(&mut self, _api_trackers: &HashMap<u64, ApiTracker>, _process_records: &HashMap<u64, ProcessRecord>) {
         // Learn from unlabeled processes that have been running
         let unlabeled_processes: Vec<_> = self.process_states.values()
             .filter(|s| s.label == LearningLabel::Unlabeled && s.detection_count == 0)

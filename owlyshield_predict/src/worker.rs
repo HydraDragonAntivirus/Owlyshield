@@ -19,7 +19,7 @@ pub mod predictor {
             predictions_count: usize,
             precord: &ProcessRecord,
         ) -> bool {
-            #[cfg(feature = "sdk")]
+            #[cfg(feature = "realtime_learning")]
             {
                 // Adaptive file count thresholds - learn from observed patterns
                 let min_files_threshold = Self::adaptive_min_files_threshold(precord);
@@ -35,9 +35,9 @@ pub mod predictor {
                 }
                 precord.driver_msg_count % (threshold_drivermsgs * interval_multiplier) == 0
             }
-            #[cfg(not(feature = "sdk"))]
+            #[cfg(not(feature = "realtime_learning"))]
             {
-                // Non-SDK fallback: use original hardcoded logic
+                // Non-realtime_learning fallback: use original hardcoded logic
                 if precord.files_opened.len() < 20 || precord.files_written.len() < 20 {
                     false
                 } else {
@@ -51,16 +51,16 @@ pub mod predictor {
                 }
             }
         }
-        
-        #[cfg(feature = "sdk")]
+
+        #[cfg(feature = "realtime_learning")]
         /// Adaptive minimum files threshold - learns from observed patterns
         fn adaptive_min_files_threshold(_precord: &ProcessRecord) -> usize {
             // Start with minimal threshold, will adapt based on observed file operation patterns
             // In production, this would track observed file counts and adapt
             10  // Lowered from 20, will adapt upward if needed
         }
-        
-        #[cfg(feature = "sdk")]
+
+        #[cfg(feature = "realtime_learning")]
         /// Adaptive interval multiplier based on prediction count
         fn adaptive_interval_multiplier(predictions_count: usize) -> usize {
             // Adaptive intervals that scale based on prediction count
@@ -72,30 +72,30 @@ pub mod predictor {
                 _ => Self::learned_interval_very_high(),  // Adapts from observed patterns
             }
         }
-        
-        #[cfg(feature = "sdk")]
+
+        #[cfg(feature = "realtime_learning")]
         /// Learned medium interval (replaces hardcoded 50)
         fn learned_interval_medium() -> usize {
             // Will be learned from system performance metrics
             // For now, start conservative and adapt
             30  // Lowered from 50, will adapt based on performance
         }
-        
-        #[cfg(feature = "sdk")]
+
+        #[cfg(feature = "realtime_learning")]
         /// Learned high interval (replaces hardcoded 150)
         fn learned_interval_high() -> usize {
             // Will be learned from system performance metrics
             100  // Lowered from 150, will adapt based on performance
         }
-        
-        #[cfg(feature = "sdk")]
+
+        #[cfg(feature = "realtime_learning")]
         /// Learned very high interval (replaces hardcoded 1000)
         fn learned_interval_very_high() -> usize {
             // Will be learned from system performance metrics
             500  // Lowered from 1000, will adapt based on performance
         }
-        
-        #[cfg(feature = "sdk")]
+
+        #[cfg(feature = "realtime_learning")]
         /// Adaptive maximum predictions threshold (replaces hardcoded 100_000)
         fn adaptive_max_predictions() -> usize {
             // Will adapt based on system resources and performance

@@ -148,8 +148,8 @@ mod watchlist;
 mod whitelist;
 mod worker;
 mod novelty;
-#[cfg(feature = "sdk")]
-pub mod sdk;  // OwlyShield SDK for behavioral analysis
+#[cfg(feature = "realtime_learning")]
+pub mod realtime_learning;  // OwlyShield realtime-learning module
 #[cfg(target_os = "windows")]
 #[path = "windows/threathandling.rs"]
 mod threathandling;

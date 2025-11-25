@@ -140,12 +140,12 @@ pub struct Config {
     pub threshold_drivermsgs: usize,
     pub threshold_prediction: f32,
     pub timesteps_stride: usize,
-    // Adaptive learning state (SDK feature)
-    #[cfg(feature = "sdk")]
+    // Adaptive learning state (realtime_learning feature)
+    #[cfg(feature = "realtime_learning")]
     adaptive_state: AdaptiveThresholdState,
 }
 
-#[cfg(feature = "sdk")]
+#[cfg(feature = "realtime_learning")]
 #[derive(Debug, Default)]
 struct AdaptiveThresholdState {
     observed_driver_msg_counts: Vec<usize>,
@@ -163,18 +163,18 @@ impl Config {
             threshold_drivermsgs: 70,
             threshold_prediction: 0.55,
             timesteps_stride: 20,
-            #[cfg(feature = "sdk")]
+            #[cfg(feature = "realtime_learning")]
             adaptive_state: AdaptiveThresholdState::default(),
         };
-        // Initialize with minimal values that will adapt quickly (SDK feature)
-        #[cfg(feature = "sdk")]
+        // Initialize with minimal values that will adapt quickly (realtime_learning feature)
+        #[cfg(feature = "realtime_learning")]
         {
             config.initialize_adaptive_thresholds();
         }
         config
     }
-    
-    #[cfg(feature = "sdk")]
+
+    #[cfg(feature = "realtime_learning")]
     /// Initialize adaptive thresholds with conservative starting values
     fn initialize_adaptive_thresholds(&mut self) {
         // Start with minimal values - will adapt based on observed patterns
@@ -182,8 +182,8 @@ impl Config {
         self.threshold_prediction = 0.5;  // Start at 50%, will adapt based on false positive rate
         self.timesteps_stride = 10;  // Start small, will adapt based on system performance
     }
-    
-    #[cfg(feature = "sdk")]
+
+    #[cfg(feature = "realtime_learning")]
     /// Adapt thresholds based on observed behavior (self-learning)
     pub fn adapt_thresholds(&mut self, driver_msg_count: usize, prediction: f32, timesteps: usize) {
         self.adaptive_state.observed_driver_msg_counts.push(driver_msg_count);
@@ -196,8 +196,8 @@ impl Config {
             self.update_adaptive_thresholds();
         }
     }
-    
-    #[cfg(feature = "sdk")]
+
+    #[cfg(feature = "realtime_learning")]
     /// Update thresholds based on statistical analysis of observed data
     fn update_adaptive_thresholds(&mut self) {
         if self.adaptive_state.observed_driver_msg_counts.len() < 10 {
