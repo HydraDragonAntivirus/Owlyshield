@@ -782,6 +782,32 @@ Return Value:
     }
     else if (Data->Iopb->MajorFunction == IRP_MJ_READ)
     {
+        // FIX: Ensure CompletionContext exists before using it
+        if (CompletionContext == nullptr) {
+             return FLT_POSTOP_FINISHED_PROCESSING;
+        }
+
+        if (Data->Iopb->Parameters.Read.Length == 0)
+        {
+            // FIX: 'newEntry' is undefined here. We delete the context passed in.
+            delete (PIRP_ENTRY)CompletionContext;
+            
+            // FIX: Must return POSTOP status, not PREOP status
+            return FLT_POSTOP_FINISHED_PROCESSING;
+        }
+        
+        // FIX: In PostOp, we don't assign *CompletionContext = ... 
+        // We simply pass the existing CompletionContext to our helper function.
+        // *CompletionContext = newEntry; 
+
+        // DEBUG LOG ONLY IF NOT IN RECURSIVE CONTEXT
+        // FIX: Ensure IS_DEBUG_IRP is defined in your header
+        if (IS_DEBUG_IRP && !KeIsExecutingDpc()) // prevent recursion in DPC or debug trap
+            DbgPrint("FsFilter: IRP READ WITH CALLBACK! ****************** \n");
+
+        // FIX: Removed early 'return FLT_PREOP_SUCCESS_WITH_CALLBACK' here 
+        // so the code below can actually execute.
+
         // return FLT_POSTOP_FINISHED_PROCESSING;
         return FSProcessPostReadIrp(Data, FltObjects, CompletionContext, Flags);
     }
@@ -1182,7 +1208,7 @@ NTSTATUS GetProcessNameByHandle(_In_ HANDLE ProcessHandle, _Out_ PUNICODE_STRING
 
     do
     {
-        pni = (PUNICODE_STRING)ExAllocatePool2(POOL_FLAG_NON_PAGED, pniSize, 'RW');
+        pni = (PUNICODE_STRING)ExAllocatePoolWithTag(NonPagedPool, pniSize, 'RW');
         if (pni != NULL)
         {
             // FIX: Use local copy instead of global variable
@@ -1296,7 +1322,7 @@ NTSTATUS QuarantineFileByPath(PUNICODE_STRING FilePath)
     // Prepare rename information
     ULONG renameInfoSize = sizeof(FILE_RENAME_INFORMATION) + destPath.Length;
     PFILE_RENAME_INFORMATION renameInfo = (PFILE_RENAME_INFORMATION)
-        ExAllocatePool2(POOL_FLAG_NON_PAGED, renameInfoSize, 'RW');
+        ExAllocatePoolWithTag(NonPagedPool, renameInfoSize, 'RW');
 
     if (renameInfo == NULL)
     {
