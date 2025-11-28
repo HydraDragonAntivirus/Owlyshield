@@ -510,7 +510,8 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
 
     if (!NT_SUCCESS(hr))
     {
-        FltReleaseFileNameInformation(nameInfo);
+        // GetFileNameInfo already releases nameInfo on failure,
+        // so do NOT call FltReleaseFileNameInformation(nameInfo) here.
         delete newEntry;
         return hr;
     }
