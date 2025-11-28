@@ -485,24 +485,32 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     if (!NT_SUCCESS(hr))
         return hr;
     if (isDir)
+    {
+        FltReleaseFileNameInformation(nameInfo);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
 
     PIRP_ENTRY newEntry = new IRP_ENTRY();
     if (newEntry == NULL)
     {
-        FltReferenceFileNameInformation(nameInfo);
-        return hr;
+        FltReleaseFileNameInformation(nameInfo);
+        return STATUS_INSUFFICIENT_RESOURCES; // Return error on alloc failure
     }
 
     // reset
     PDRIVER_MESSAGE newItem = &newEntry->data;
     PUNICODE_STRING FilePath = &(newEntry->filePath);
 
+    // FltReferenceFileNameInformation is not needed here as FltGetFileNameInformation returns a referenced pointer.
+    // The previous code had a bug where it called FltReferenceFileNameInformation(nameInfo) on entry failure,
+    // which is wrong; it should only release it. Since this path is only taken on newEntry failure,
+    // we must release nameInfo. We've fixed this above and below.
+
     hr = GetFileNameInfo(FltObjects, FilePath, nameInfo);
 
     if (!NT_SUCCESS(hr))
     {
-        FltReferenceFileNameInformation(nameInfo);
+        FltReleaseFileNameInformation(nameInfo);
         delete newEntry;
         return hr;
     }
@@ -517,7 +525,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         // WARNING: This DbgPrint is in a high-traffic path and can lead to Bugcheck 0x111
         if (IS_DEBUG_IRP)
             DbgPrint("!!! FSFilter: Item does not have a gid, skipping\n");
-        FltReferenceFileNameInformation(nameInfo);
+        FltReleaseFileNameInformation(nameInfo);
         delete newEntry;
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
@@ -525,13 +533,13 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
 
     // Keeping user's DbgPrint here
     if (IS_DEBUG_IRP)
-        DbgPrint("!!! FSFilter: Registring new irp for Gid: %d with pid: %d\n", gid, newItem->PID);
+        DbgPrint("!!! FSFilter: Registring new irp for Gid: %d with pid: %d\n", (ULONG)gid, newItem->PID);
 
     // get file id
     hr = CopyFileIdInfo(Data, newItem);
     if (!NT_SUCCESS(hr))
     {
-        FltReferenceFileNameInformation(nameInfo);
+        FltReleaseFileNameInformation(nameInfo);
         delete newEntry;
         return hr;
     }
@@ -553,12 +561,12 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     if (IS_DEBUG_IRP)
         DbgPrint("!!! FSFilter: Logging IRP op: %s \n", FltGetIrpName(Data->Iopb->MajorFunction));
 
+    // Release nameInfo only if not IRP_MJ_SET_INFORMATION (which might need it later)
     if (Data->Iopb->MajorFunction != IRP_MJ_SET_INFORMATION)
         FltReleaseFileNameInformation(nameInfo);
 
     switch (Data->Iopb->MajorFunction)
     {
-    // create is handled on post operation, read is created here but calculated on post(data avilable
     case IRP_MJ_READ: {
         newItem->IRP_OP = IRP_READ;
         if (Data->Iopb->Parameters.Read.Length == 0) // no data to read
@@ -583,15 +591,11 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         break;
     case IRP_MJ_WRITE: {
         newItem->IRP_OP = IRP_WRITE;
-        // if (newItem->FileLocationInfo == FILE_NOT_PROTECTED) {
-        //	delete newEntry;
-        //	return FLT_PREOP_SUCCESS_NO_CALLBACK;
-        // }
         newItem->FileChange = FILE_CHANGE_WRITE;
 
         if (Data->Iopb->Parameters.Write.Length == 0) // no data to write
         {
-            // Fix: Clean up memory and return, instead of just breaking (user's original code leaked memory here)
+            // Fix: Clean up memory and return
             delete newEntry;
             return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
@@ -617,16 +621,18 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         }
         newItem->MemSizeUsed = Data->Iopb->Parameters.Write.Length;
 
-        // CRITICAL FIX: Floating Point State Protection
-        // MUST save and restore FPU state before calling shannonEntropy (which uses floats/doubles)
-        // in Kernel Mode to prevent system instability (Bugcheck 0x111 or FPU corruption).
-
+        // CRITICAL FIX: Floating Point State Protection for RECURSIVE_NMI (0x111)
         KFLOATING_SAVE floatingSave;
-        NTSTATUS fpStatus = KeSaveFloatingPointState(&floatingSave);
+        BOOLEAN fpuStateSaved = FALSE;
+        NTSTATUS fpStatus = STATUS_SUCCESS;
+
+        // 1. Try to save FPU state
+        fpStatus = KeSaveFloatingPointState(&floatingSave);
 
         if (NT_SUCCESS(fpStatus))
         {
-            // we catch EXCEPTION_EXECUTE_HANDLER so to prevent crash when calculating
+            fpuStateSaved = TRUE;
+            // 2. Perform the floating point operation (entropy calculation)
             __try
             {
                 newItem->Entropy = shannonEntropy((PUCHAR)writeBuffer, newItem->MemSizeUsed);
@@ -634,35 +640,42 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                // This exception handling block from user's code returns FLT_PREOP_COMPLETE,
-                // which prevents KeRestoreFloatingPointState outside the block.
-                // It must be restored before returning.
-
+                // Keeping user's DbgPrint here
                 if (IS_DEBUG_IRP)
                     DbgPrint("!!! FSFilter: Failed to calc entropy (Exception caught, IRP failing)\n");
 
-                KeRestoreFloatingPointState(&floatingSave); // CRITICAL: Restore FPU state
+                // CRITICAL: Ensure FPU state is restored even on exception path before returning
+                if (fpuStateSaved)
+                {
+                    KeRestoreFloatingPointState(&floatingSave);
+                    fpuStateSaved = FALSE; // Mark as restored
+                }
+
                 delete newEntry;
                 // fail the irp request, as requested by original logic
                 Data->IoStatus.Status = STATUS_INTERNAL_ERROR;
                 Data->IoStatus.Information = 0;
                 return FLT_PREOP_COMPLETE;
             }
-
-            // If the __try block succeeded, restore FPU state now.
-            KeRestoreFloatingPointState(&floatingSave);
+            // 3. Restore FPU state if the try block succeeded
+            if (fpuStateSaved)
+            {
+                KeRestoreFloatingPointState(&floatingSave);
+                fpuStateSaved = FALSE; // Mark as restored
+            }
         }
         else
         {
-            // If FPU state couldn't be saved, skip calculation and let the IRP proceed.
+            // If FPU state couldn't be saved, skip calculation and continue without entropy.
             if (IS_DEBUG_IRP)
-                DbgPrint("!!! FSFilter: Failed to save FPU state, skipping entropy calculation\n");
+                DbgPrint("!!! FSFilter: Failed to save FPU state (Status: 0x%X), skipping entropy calculation\n",
+                         fpStatus);
             newItem->isEntropyCalc = FALSE;
             newItem->Entropy = 0;
+            // Note: fpuStateSaved is false, so no restore needed.
         }
-
-        break;
     }
+    break;
     case IRP_MJ_SET_INFORMATION: {
         newItem->IRP_OP = IRP_SETINFO;
         // we check for delete later and renaming
@@ -759,6 +772,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         } // end rename
         else // not rename or delete (set info)
         {
+            // Note: nameInfo was not released outside the switch block, so we release it here if we abandon the IRP
             delete newEntry;
             FltReleaseFileNameInformation(nameInfo);
             return FLT_PREOP_SUCCESS_NO_CALLBACK;
@@ -766,6 +780,14 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         break;
     }
     default:
+        // Note: nameInfo was not released outside the switch block, so we release it here if we abandon the IRP
+        if (Data->Iopb->MajorFunction != IRP_MJ_SET_INFORMATION) // Already released if not SET_INFORMATION
+        {                                                        /* Do nothing */
+        }
+        else
+        {
+            FltReleaseFileNameInformation(nameInfo);
+        }
         delete newEntry;
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
