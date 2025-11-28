@@ -23,7 +23,7 @@ Environment :
 //  Name of port used to communicate
 //
 
-const PWSTR ComPortName = L"\\RWFilter";
+const WCHAR * const ComPortName = L"\\RWFilter";
 
 #define MAX_FILE_NAME_LENGTH 520
 #define MAX_FILE_NAME_SIZE (MAX_FILE_NAME_LENGTH * sizeof(WCHAR)) // max length in bytes of files sizes and dir paths
