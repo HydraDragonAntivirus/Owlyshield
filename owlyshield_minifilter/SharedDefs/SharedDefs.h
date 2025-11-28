@@ -15,6 +15,11 @@ Environment :
 --*/
 
 //
+// Note: This header is included after fltKernel.h in kernel mode
+// and after windows.h in user mode, so types are already defined
+//
+
+//
 //  Name of port used to communicate
 //
 

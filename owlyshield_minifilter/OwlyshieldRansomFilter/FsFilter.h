@@ -102,7 +102,7 @@ VOID CopyExtension(PWCHAR dest, PFLT_FILE_NAME_INFORMATION nameInfo);
 // if parent doesnt have a gid and both are system process, new process isnt recorded
 // else we create a new gid for process
 
-VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create);
+_IRQL_raises_(DISPATCH_LEVEL) VOID AddRemProcessRoutine(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create);
 
 // Process and quarantine functions
 NTSTATUS GetProcessNameByHandle(_In_ HANDLE ProcessHandle, _Out_ PUNICODE_STRING *Name);

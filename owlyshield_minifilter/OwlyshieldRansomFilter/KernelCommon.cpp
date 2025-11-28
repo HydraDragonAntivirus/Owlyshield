@@ -1,7 +1,7 @@
 #include "KernelCommon.h"
 
 void* __cdecl operator new(size_t size) {
-    return ExAllocatePoolWithTag(NonPagedPool, size, 'RW');
+    return ExAllocatePool2(POOL_FLAG_NON_PAGED, size, 'RW');
 }
 
 void __cdecl operator delete(void* data, size_t size) {

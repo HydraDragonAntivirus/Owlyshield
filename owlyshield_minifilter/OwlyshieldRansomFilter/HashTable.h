@@ -1,5 +1,7 @@
 #pragma once
 
+#define POOL_FLAG_NON_PAGED 0x0000000000000040UI64 // Non paged pool NX
+
 //Hashnode class
 struct HashNode {
     LIST_ENTRY entry;
@@ -13,13 +15,15 @@ struct HashNode {
         key = skey;
     }
 
-    void* HashNode::operator new(size_t size) {
-        void* ptr = ExAllocatePoolWithTag(NonPagedPool, size, 'RW');
-        memset(ptr, 0, size);
+    void* operator new(size_t size) {
+        void* ptr = ExAllocatePool2(POOL_FLAG_NON_PAGED, size, 'RW');
+        if (ptr != 0) {
+            memset(ptr, 0, size);
+        }
         return ptr;
     }
 
-    void HashNode::operator delete(void* ptr) {
+    void operator delete(void* ptr) {
         ExFreePoolWithTag(ptr, 'RW');
     }
     //fixme needs new and delete operator

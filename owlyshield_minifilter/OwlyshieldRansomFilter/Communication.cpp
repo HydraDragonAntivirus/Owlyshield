@@ -126,7 +126,7 @@ NTSTATUS KillProcessesInGid(ULONGLONG GID, PLONG OutputStatus, BOOLEAN enableQua
     }
 
     // Allocate buffer for PIDs
-    PULONG Buffer = (PULONG)ExAllocatePoolWithTag(NonPagedPool, sizeof(ULONG) * gidSize, 'RW');
+    PULONG Buffer = (PULONG)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(ULONG) * gidSize, 'RW');
     if (Buffer == nullptr)
     {
         DbgPrint("!!! FS : memory allocation error on non paged pool\n");

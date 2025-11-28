@@ -21,7 +21,7 @@ Return Value:
 --*/
 {
     String->Buffer =
-        (PWCH)ExAllocatePoolWithTag(NonPagedPool, String->MaximumLength, 'RW');
+        (PWCH)ExAllocatePool2(POOL_FLAG_NON_PAGED, String->MaximumLength, 'RW');
 
     if (String->Buffer == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
