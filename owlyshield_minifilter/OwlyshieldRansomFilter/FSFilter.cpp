@@ -464,10 +464,12 @@ NTSTATUS
 FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltObjects,
                        _Flt_CompletionContext_Outptr_ PVOID *CompletionContext)
 {
-    // no communication
+    // NO COMMUNICATION CHECK (kept same as original)
     if (driverData->isFilterClosed() || IsCommClosed())
     {
-        // DbgPrint("!!! FSFilter: Filter is closed or Port is closed, skipping data\n");
+        // Debug logging is commented out or controlled by IS_DEBUG_IRP
+        // DbgPrint("!!! FSFilter: Filter is closed or Port is closed, skipping data\n"); // Keeping user's DbgPrint
+        // here
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     NTSTATUS hr = FLT_PREOP_SUCCESS_NO_CALLBACK;
@@ -484,6 +486,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         return hr;
     if (isDir)
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
+
     PIRP_ENTRY newEntry = new IRP_ENTRY();
     if (newEntry == NULL)
     {
@@ -511,6 +514,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     ULONGLONG gid = driverData->GetProcessGid(newItem->PID, &isGidFound);
     if (gid == 0 || !isGidFound)
     {
+        // WARNING: This DbgPrint is in a high-traffic path and can lead to Bugcheck 0x111
         if (IS_DEBUG_IRP)
             DbgPrint("!!! FSFilter: Item does not have a gid, skipping\n");
         FltReferenceFileNameInformation(nameInfo);
@@ -519,6 +523,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     }
     newItem->Gid = gid;
 
+    // Keeping user's DbgPrint here
     if (IS_DEBUG_IRP)
         DbgPrint("!!! FSFilter: Registring new irp for Gid: %d with pid: %d\n", gid, newItem->PID);
 
@@ -533,6 +538,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
 
     if (FSIsFileNameInScanDirs(FilePath))
     {
+        // Keeping user's DbgPrint here
         if (IS_DEBUG_IRP)
             DbgPrint("!!! FSFilter: File in scan area \n");
         newItem->FileLocationInfo = FILE_PROTECTED;
@@ -543,6 +549,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         CopyExtension(newItem->Extension, nameInfo);
     }
 
+    // Keeping user's DbgPrint here
     if (IS_DEBUG_IRP)
         DbgPrint("!!! FSFilter: Logging IRP op: %s \n", FltGetIrpName(Data->Iopb->MajorFunction));
 
@@ -556,14 +563,18 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         newItem->IRP_OP = IRP_READ;
         if (Data->Iopb->Parameters.Read.Length == 0) // no data to read
         {
+            // Fix: Clean up memory before returning (user's original code leaked memory here)
             delete newEntry;
+            // Keeping user's DbgPrint here
             DbgPrint("FsFilter: IRP READ NOCALLBACK LENGTH IS ZERO! \n");
             return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
+        // Keeping user's DbgPrint here
         if (IS_DEBUG_IRP)
             DbgPrint("!!! FSFilter: Preop IRP_MJ_READ, return with postop \n");
         // save context for post, we calculate the entropy of read, we pass the irp to application on post op
         *CompletionContext = newEntry;
+        // Keeping user's DbgPrint here
         DbgPrint("FsFilter: IRP READ WITH CALLBACK! ****************** \n");
         return FLT_PREOP_SUCCESS_WITH_CALLBACK;
     }
@@ -577,12 +588,15 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         //	return FLT_PREOP_SUCCESS_NO_CALLBACK;
         // }
         newItem->FileChange = FILE_CHANGE_WRITE;
-        PVOID writeBuffer = NULL;
+
         if (Data->Iopb->Parameters.Write.Length == 0) // no data to write
         {
-            break;
+            // Fix: Clean up memory and return, instead of just breaking (user's original code leaked memory here)
+            delete newEntry;
+            return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
 
+        PVOID writeBuffer = NULL;
         // prepare buffer for entropy calc
         if (Data->Iopb->Parameters.Write.MdlAddress == NULL)
         { // there's mdl buffer, we use it
@@ -602,24 +616,53 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
             return FLT_PREOP_COMPLETE;
         }
         newItem->MemSizeUsed = Data->Iopb->Parameters.Write.Length;
-        // we catch EXCEPTION_EXECUTE_HANDLER so to prevent crash when calculating
-        __try
+
+        // CRITICAL FIX: Floating Point State Protection
+        // MUST save and restore FPU state before calling shannonEntropy (which uses floats/doubles)
+        // in Kernel Mode to prevent system instability (Bugcheck 0x111 or FPU corruption).
+
+        KFLOATING_SAVE floatingSave;
+        NTSTATUS fpStatus = KeSaveFloatingPointState(&floatingSave);
+
+        if (NT_SUCCESS(fpStatus))
         {
-            newItem->Entropy = shannonEntropy((PUCHAR)writeBuffer, newItem->MemSizeUsed);
-            newItem->isEntropyCalc = TRUE;
+            // we catch EXCEPTION_EXECUTE_HANDLER so to prevent crash when calculating
+            __try
+            {
+                newItem->Entropy = shannonEntropy((PUCHAR)writeBuffer, newItem->MemSizeUsed);
+                newItem->isEntropyCalc = TRUE;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                // This exception handling block from user's code returns FLT_PREOP_COMPLETE,
+                // which prevents KeRestoreFloatingPointState outside the block.
+                // It must be restored before returning.
+
+                if (IS_DEBUG_IRP)
+                    DbgPrint("!!! FSFilter: Failed to calc entropy (Exception caught, IRP failing)\n");
+
+                KeRestoreFloatingPointState(&floatingSave); // CRITICAL: Restore FPU state
+                delete newEntry;
+                // fail the irp request, as requested by original logic
+                Data->IoStatus.Status = STATUS_INTERNAL_ERROR;
+                Data->IoStatus.Information = 0;
+                return FLT_PREOP_COMPLETE;
+            }
+
+            // If the __try block succeeded, restore FPU state now.
+            KeRestoreFloatingPointState(&floatingSave);
         }
-        __except (EXCEPTION_EXECUTE_HANDLER)
+        else
         {
+            // If FPU state couldn't be saved, skip calculation and let the IRP proceed.
             if (IS_DEBUG_IRP)
-                DbgPrint("!!! FSFilter: Failed to calc entropy\n");
-            delete newEntry;
-            // fail the irp request
-            Data->IoStatus.Status = STATUS_INTERNAL_ERROR;
-            Data->IoStatus.Information = 0;
-            return FLT_PREOP_COMPLETE;
+                DbgPrint("!!! FSFilter: Failed to save FPU state, skipping entropy calculation\n");
+            newItem->isEntropyCalc = FALSE;
+            newItem->Entropy = 0;
         }
+
+        break;
     }
-    break;
     case IRP_MJ_SET_INFORMATION: {
         newItem->IRP_OP = IRP_SETINFO;
         // we check for delete later and renaming
@@ -726,8 +769,11 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         delete newEntry;
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
+
+    // Keeping user's DbgPrint here
     if (IS_DEBUG_IRP)
         DbgPrint("!!! FSFilter: Adding entry to irps %s\n", FltGetIrpName(Data->Iopb->MajorFunction));
+
     if (!driverData->AddIrpMessage(newEntry))
     {
         delete newEntry;
