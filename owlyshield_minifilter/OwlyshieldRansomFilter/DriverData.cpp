@@ -95,14 +95,14 @@ BOOLEAN DriverData::RemoveGidRecordAux(PGID_ENTRY gidRecord) {
 
 BOOLEAN DriverData::RemoveProcess(ULONG ProcessId) {
     BOOLEAN ret = FALSE;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&GIDSystemLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&GIDSystemLock, &oldIrql);
     ULONGLONG gid = (ULONGLONG)PidToGids.get(ProcessId);
     if (gid) {  // there is Gid
         ret = RemoveProcessRecordAux(ProcessId, gid);
     }
 
-    KeReleaseSpinLock(&GIDSystemLock, irql);
+    KeReleaseSpinLock(&GIDSystemLock, oldIrql);
     return ret;
 }
 
@@ -111,8 +111,8 @@ BOOLEAN DriverData::RecordNewProcess(
     ULONG ProcessId,
     ULONG ParentPid) {
     BOOLEAN ret = FALSE;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&GIDSystemLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&GIDSystemLock, &oldIrql);
     ULONGLONG gid = (ULONGLONG)PidToGids.get(ParentPid);
     PPID_ENTRY pStrct = new PID_ENTRY;
     pStrct->Pid = ProcessId;
@@ -137,14 +137,14 @@ BOOLEAN DriverData::RecordNewProcess(
         newGidRecord->pidsSize++;
         gidsSize++;
     }
-    KeReleaseSpinLock(&GIDSystemLock, irql);
+    KeReleaseSpinLock(&GIDSystemLock, oldIrql);
     return ret;
 }
 
 BOOLEAN DriverData::RemoveGid(ULONGLONG gid) {
     BOOLEAN ret = FALSE;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&GIDSystemLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&GIDSystemLock, &oldIrql);
     PGID_ENTRY gidRecord = (PGID_ENTRY)GidToPids.get(gid);
     if (gidRecord) {  // there is Gid list
         RemoveGidRecordAux(gidRecord);  //clear process list
@@ -156,7 +156,7 @@ BOOLEAN DriverData::RemoveGid(ULONGLONG gid) {
         ret = TRUE;
     }
 
-    KeReleaseSpinLock(&GIDSystemLock, irql);
+    KeReleaseSpinLock(&GIDSystemLock, oldIrql);
     return ret;
 }
 
@@ -164,14 +164,14 @@ ULONGLONG DriverData::GetGidSize(ULONGLONG gid, PBOOLEAN found) {
     ASSERT(found != nullptr);
     *found = FALSE;
     ULONGLONG ret = 0;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&GIDSystemLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&GIDSystemLock, &oldIrql);
     PGID_ENTRY GidRecord = (PGID_ENTRY)GidToPids.get(gid);
     if (GidRecord != nullptr) {  // there is such Gid
         *found = TRUE;
         ret = GidRecord->pidsSize;
     }
-    KeReleaseSpinLock(&GIDSystemLock, irql);
+    KeReleaseSpinLock(&GIDSystemLock, oldIrql);
     return ret;
 }
 
@@ -187,8 +187,8 @@ BOOLEAN DriverData::GetGidPids(
         return FALSE;
     ULONGLONG pidsSize = 0;
     ULONGLONG pidsIter = 0;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&GIDSystemLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&GIDSystemLock, &oldIrql);
     PGID_ENTRY GidRecord = (PGID_ENTRY)GidToPids.get(gid);
     if (GidRecord != nullptr) {  // there is such Gid
         pidsSize = GidRecord->pidsSize;
@@ -205,7 +205,7 @@ BOOLEAN DriverData::GetGidPids(
             iterator = iterator->Flink;
         }
     }
-    KeReleaseSpinLock(&GIDSystemLock, irql);
+    KeReleaseSpinLock(&GIDSystemLock, oldIrql);
     if (GidRecord == nullptr) {
         return FALSE;
     }
@@ -220,20 +220,20 @@ ULONGLONG DriverData::GetProcessGid(ULONG ProcessId, PBOOLEAN found) {
     ASSERT(found != nullptr);
     *found = FALSE;
     ULONGLONG ret = 0;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&GIDSystemLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&GIDSystemLock, &oldIrql);
     ret = (ULONGLONG)PidToGids.get(ProcessId);
     if (ret)
         *found = TRUE;
-    KeReleaseSpinLock(&GIDSystemLock, irql);
+    KeReleaseSpinLock(&GIDSystemLock, oldIrql);
     //DbgPrint("Gid: %d %d\n", ret, *found);
     return ret;
 }
 
 //clear all data related to Gid system
 VOID DriverData::ClearGidsPids() {
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&GIDSystemLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&GIDSystemLock, &oldIrql);
     PLIST_ENTRY headGids = &GidsList;
     PLIST_ENTRY iterator = headGids->Flink;
     while (iterator != headGids) {  // clear list
@@ -249,15 +249,15 @@ VOID DriverData::ClearGidsPids() {
     }
     //ASSERT(headGids->Flink == headGids);
     GidCounter = 0;
-    KeReleaseSpinLock(&GIDSystemLock, irql);
+    KeReleaseSpinLock(&GIDSystemLock, oldIrql);
 }
 
 ULONGLONG DriverData::GidsSize() {
     ULONGLONG ret = 0;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&GIDSystemLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&GIDSystemLock, &oldIrql);
     ret = gidsSize;
-    KeReleaseSpinLock(&GIDSystemLock, irql);
+    KeReleaseSpinLock(&GIDSystemLock, oldIrql);
     return ret;
 }
 
@@ -266,8 +266,8 @@ ULONGLONG DriverData::GidsSize() {
 //#######################################################################################
 
 VOID DriverData::ClearIrps() {
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&irpOpsLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&irpOpsLock, &oldIrql);
     PLIST_ENTRY pEntryIrps = irpOps.Flink;
     while (pEntryIrps != &irpOps) {
         LIST_ENTRY temp = *pEntryIrps;
@@ -279,49 +279,49 @@ VOID DriverData::ClearIrps() {
     }
     irpOpsSize = 0;
     InitializeListHead(&irpOps);
-    KeReleaseSpinLock(&irpOpsLock, irql);
+    KeReleaseSpinLock(&irpOpsLock, oldIrql);
 }
 
 ULONG DriverData::IrpSize() {
     ULONG ret = 0;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&irpOpsLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&irpOpsLock, &oldIrql);
     ret = irpOpsSize;
-    KeReleaseSpinLock(&irpOpsLock, irql);
+    KeReleaseSpinLock(&irpOpsLock, oldIrql);
     return ret;
 }
 
 BOOLEAN DriverData::AddIrpMessage(PIRP_ENTRY newEntry) {
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&irpOpsLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&irpOpsLock, &oldIrql);
     if (irpOpsSize < MAX_OPS_SAVE) {
         irpOpsSize++;
         InsertTailList(&irpOps, &newEntry->entry);
     } else {
-        KeReleaseSpinLock(&irpOpsLock, irql);
+        KeReleaseSpinLock(&irpOpsLock, oldIrql);
         return FALSE;
     }
-    KeReleaseSpinLock(&irpOpsLock, irql);
+    KeReleaseSpinLock(&irpOpsLock, oldIrql);
     return TRUE;
 }
 
 BOOLEAN DriverData::RemIrpMessage(PIRP_ENTRY newEntry) {
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&irpOpsLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&irpOpsLock, &oldIrql);
     RemoveEntryList(&newEntry->entry);
     irpOpsSize--;
 
-    KeReleaseSpinLock(&irpOpsLock, irql);
+    KeReleaseSpinLock(&irpOpsLock, oldIrql);
     return TRUE;
 }
 
 PIRP_ENTRY DriverData::GetFirstIrpMessage() {
     PLIST_ENTRY ret;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&irpOpsLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&irpOpsLock, &oldIrql);
     ret = RemoveHeadList(&irpOps);
     irpOpsSize--;
-    KeReleaseSpinLock(&irpOpsLock, irql);
+    KeReleaseSpinLock(&irpOpsLock, oldIrql);
     if (ret == &irpOps) {
         return NULL;
     }
@@ -347,8 +347,8 @@ VOID DriverData::DriverGetIrps(
     PDRIVER_MESSAGE Prev = nullptr;
     USHORT prevBufferSize = 0;
 
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&irpOpsLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&irpOpsLock, &oldIrql);
 
     while (irpOpsSize) {
         irpEntryList = RemoveHeadList(&irpOps);
@@ -412,7 +412,7 @@ VOID DriverData::DriverGetIrps(
         BufferSizeRemain -= (sizeof(DRIVER_MESSAGE) + prevBufferSize);
         outHeader.addOp();
     }
-    KeReleaseSpinLock(&irpOpsLock, irql);
+    KeReleaseSpinLock(&irpOpsLock, oldIrql);
     if (prevBufferSize > MAX_FILE_NAME_SIZE)
         prevBufferSize = MAX_FILE_NAME_SIZE;
     if (Prev != nullptr && PrevEntry != nullptr) {
@@ -451,13 +451,13 @@ VOID DriverData::DriverGetIrps(
 
 LIST_ENTRY DriverData::GetAllEntries() {
     LIST_ENTRY newList;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&irpOpsLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&irpOpsLock, &oldIrql);
     irpOpsSize = 0;
     newList = irpOps;
     InitializeListHead(&irpOps);
 
-    KeReleaseSpinLock(&irpOpsLock, irql);
+    KeReleaseSpinLock(&irpOpsLock, oldIrql);
     return newList;
 }
 
@@ -468,8 +468,8 @@ LIST_ENTRY DriverData::GetAllEntries() {
 BOOLEAN DriverData::AddDirectoryEntry(PDIRECTORY_ENTRY newEntry) {
     BOOLEAN ret = FALSE;
     BOOLEAN foundMatch = FALSE;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&directoriesSpinLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&directoriesSpinLock, &oldIrql);
 
     PLIST_ENTRY pEntry = rootDirectories.Flink;
     while (pEntry != &rootDirectories) {
@@ -497,14 +497,14 @@ BOOLEAN DriverData::AddDirectoryEntry(PDIRECTORY_ENTRY newEntry) {
         directoryRootsSize++;
         ret = TRUE;
     }
-    KeReleaseSpinLock(&directoriesSpinLock, irql);
+    KeReleaseSpinLock(&directoriesSpinLock, oldIrql);
     return ret;
 }
 
 PDIRECTORY_ENTRY DriverData::RemDirectoryEntry(LPCWSTR directory) {
     PDIRECTORY_ENTRY ret = NULL;
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&directoriesSpinLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&directoriesSpinLock, &oldIrql);
 
     PLIST_ENTRY pEntry = rootDirectories.Flink;
 
@@ -531,7 +531,7 @@ PDIRECTORY_ENTRY DriverData::RemDirectoryEntry(LPCWSTR directory) {
         //
         pEntry = pEntry->Flink;
     }
-    KeReleaseSpinLock(&directoriesSpinLock, irql);
+    KeReleaseSpinLock(&directoriesSpinLock, oldIrql);
     return ret;
 }
 
@@ -542,9 +542,9 @@ BOOLEAN DriverData::IsContainingDirectory(CONST PUNICODE_STRING path) {
     if (path == NULL || path->Buffer == NULL)
         return FALSE;
     BOOLEAN ret = FALSE;
-    KIRQL irql = KeGetCurrentIrql();
+    KIRQL oldIrql;
     //DbgPrint("Looking for path: %ls in lookup dirs", path);
-    KeAcquireSpinLock(&directoriesSpinLock, &irql);
+    KeAcquireSpinLock(&directoriesSpinLock, &oldIrql);
     if (directoryRootsSize != 0) {
         PLIST_ENTRY pEntry = rootDirectories.Flink;
         while (pEntry != &rootDirectories) {
@@ -570,13 +570,13 @@ BOOLEAN DriverData::IsContainingDirectory(CONST PUNICODE_STRING path) {
             pEntry = pEntry->Flink;
         }
     }
-    KeReleaseSpinLock(&directoriesSpinLock, irql);
+    KeReleaseSpinLock(&directoriesSpinLock, oldIrql);
     return ret;
 }
 
 VOID DriverData::ClearDirectories() {
-    KIRQL irql = KeGetCurrentIrql();
-    KeAcquireSpinLock(&directoriesSpinLock, &irql);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&directoriesSpinLock, &oldIrql);
     PLIST_ENTRY pEntryDirs = rootDirectories.Flink;
     while (pEntryDirs != &rootDirectories) {
         LIST_ENTRY temp = *pEntryDirs;
@@ -588,5 +588,5 @@ VOID DriverData::ClearDirectories() {
     }
     directoryRootsSize = 0;
     InitializeListHead(&rootDirectories);
-    KeReleaseSpinLock(&directoriesSpinLock, irql);
+    KeReleaseSpinLock(&directoriesSpinLock, oldIrql);
 }
