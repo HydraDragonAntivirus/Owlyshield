@@ -488,11 +488,13 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     if (!NT_SUCCESS(hr))
     {
         FltReleaseFileNameInformation(nameInfo);
+        nameInfoReleased = TRUE; // Mark as released
         return hr;
     }
     if (isDir)
     {
         FltReleaseFileNameInformation(nameInfo);
+        nameInfoReleased = TRUE; // Mark as released
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
@@ -500,6 +502,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     if (newEntry == NULL)
     {
         FltReleaseFileNameInformation(nameInfo);
+        nameInfoReleased = TRUE;              // Mark as released
         return STATUS_INSUFFICIENT_RESOURCES; // Return error on alloc failure
     }
 
@@ -512,6 +515,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     if (!NT_SUCCESS(hr))
     {
         FltReleaseFileNameInformation(nameInfo);
+        nameInfoReleased = TRUE; // Mark as released
         delete newEntry;
         return hr;
     }
@@ -527,6 +531,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         if (IS_DEBUG_IRP)
             DbgPrint("!!! FSFilter: Item does not have a gid, skipping\n");
         FltReleaseFileNameInformation(nameInfo);
+        nameInfoReleased = TRUE; // Mark as released
         delete newEntry;
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
@@ -541,6 +546,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     if (!NT_SUCCESS(hr))
     {
         FltReleaseFileNameInformation(nameInfo);
+        nameInfoReleased = TRUE; // Mark as released
         delete newEntry;
         return hr;
     }
@@ -573,6 +579,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         {
             delete newEntry;
             FltReleaseFileNameInformation(nameInfo); // **RELEASE NAMEINFO**
+            nameInfoReleased = TRUE;                 // Mark as released
             DbgPrint("FsFilter: IRP READ NOCALLBACK LENGTH IS ZERO! \n");
             return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
@@ -591,7 +598,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     }
     case IRP_MJ_CLEANUP:
         newItem->IRP_OP = IRP_CLEANUP;
-        // Falls through to final cleanup block
+        // Falls through to final cleanup block. nameInfoReleased remains FALSE.
         break;
     case IRP_MJ_WRITE: {
         newItem->IRP_OP = IRP_WRITE;
@@ -601,6 +608,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         {
             delete newEntry;
             FltReleaseFileNameInformation(nameInfo); // **RELEASE NAMEINFO**
+            nameInfoReleased = TRUE;                 // Mark as released
             return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
 
@@ -619,6 +627,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         { // alloc failed
             delete newEntry;
             FltReleaseFileNameInformation(nameInfo); // **RELEASE NAMEINFO**
+            nameInfoReleased = TRUE;                 // Mark as released
             // fail the irp request
             Data->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
             Data->IoStatus.Information = 0;
@@ -658,6 +667,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
 
                 delete newEntry;
                 FltReleaseFileNameInformation(nameInfo); // **RELEASE NAMEINFO**
+                nameInfoReleased = TRUE;                 // Mark as released
                 // fail the irp request, as requested by original logic
                 Data->IoStatus.Status = STATUS_INTERNAL_ERROR;
                 Data->IoStatus.Information = 0;
@@ -680,7 +690,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
             newItem->Entropy = 0;
             // Note: fpuStateSaved is false, so no restore needed.
         }
-        // Falls through to final cleanup block
+        // Falls through to final cleanup block. nameInfoReleased remains FALSE.
     }
     break;
     case IRP_MJ_SET_INFORMATION: {
@@ -787,7 +797,7 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
             nameInfoReleased = TRUE;
             return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
-        // Falls through to final cleanup block
+        // Falls through to final cleanup block. nameInfoReleased is TRUE if delete/rename succeeded, or path exited.
         break;
     }
     default:
@@ -801,9 +811,8 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
     // FINAL CLEANUP BLOCK (Reached by IRP_MJ_CLEANUP, IRP_MJ_WRITE, and successful IRP_MJ_SET_INFORMATION
     // delete/rename)
 
-    // Only release nameInfo here if it was not released in the IRP-specific handlers above.
-    // IRP_MJ_SET_INFORMATION, IRP_MJ_READ, and default all set nameInfoReleased=TRUE on release.
-    // IRP_MJ_CLEANUP and IRP_MJ_WRITE (success path) fall through and need a release.
+    // nameInfo is only released here if it was not released in the IRP-specific handlers above.
+    // This handles IRP_MJ_CLEANUP and successful IRP_MJ_WRITE.
     if (!nameInfoReleased)
     {
         FltReleaseFileNameInformation(nameInfo); // **FINAL CATCH-ALL RELEASE**
