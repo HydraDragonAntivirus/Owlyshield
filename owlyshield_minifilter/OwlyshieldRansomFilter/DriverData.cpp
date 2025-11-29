@@ -376,22 +376,22 @@ VOID DriverData::DriverGetIrps(
             break;
         }
 
+        // Prepare the message for user-mode.
+        // The file path will follow immediately after the DRIVER_MESSAGE structure.
+        // We set the buffer pointer to null to avoid leaking a kernel address.
+        // The user-mode application must know to look for the string data after the struct.
+        PWCHAR originalPathBuffer = irp->filePath.Buffer;
+        irpMsg->filePath.Buffer = nullptr;
+        irpMsg->filePath.Length = nameBufferSize;
+        irpMsg->filePath.MaximumLength = nameBufferSize;
         irpMsg->next = nullptr;
-        
-        if (nameBufferSize > 0) {
-            irpMsg->filePath.Length = nameBufferSize;
-            irpMsg->filePath.MaximumLength = nameBufferSize;
-            irpMsg->filePath.Buffer = (PWCH)(CurrentBuffer + sizeof(DRIVER_MESSAGE));
-        } else {
-            irpMsg->filePath.Length = 0;
-            irpMsg->filePath.MaximumLength = 0;
-            irpMsg->filePath.Buffer = nullptr;
-        }
 
+        // Copy the DRIVER_MESSAGE structure into the output buffer.
         RtlCopyMemory(CurrentBuffer, irpMsg, sizeof(DRIVER_MESSAGE));
         
+        // Copy the actual file path string right after the structure.
         if (nameBufferSize > 0) {
-            RtlCopyMemory(CurrentBuffer + sizeof(DRIVER_MESSAGE), irp->filePath.Buffer, nameBufferSize);
+            RtlCopyMemory(CurrentBuffer + sizeof(DRIVER_MESSAGE), originalPathBuffer, nameBufferSize);
         }
         
         CurrentBuffer += requiredSize;
