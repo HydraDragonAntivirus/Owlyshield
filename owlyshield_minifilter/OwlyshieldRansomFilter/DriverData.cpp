@@ -336,117 +336,77 @@ VOID DriverData::DriverGetIrps(
 
     PCHAR OutputBuffer = (PCHAR)Buffer;
     ASSERT(OutputBuffer != nullptr);
-    OutputBuffer += sizeof(RWD_REPLY_IRPS);
-
+    PCHAR CurrentBuffer = OutputBuffer + sizeof(RWD_REPLY_IRPS);
+    
     ULONG BufferSizeRemain = BufferSize - sizeof(RWD_REPLY_IRPS);
 
     RWD_REPLY_IRPS outHeader;
     PLIST_ENTRY irpEntryList;
 
-    PIRP_ENTRY PrevEntry = nullptr;
-    PDRIVER_MESSAGE Prev = nullptr;
-    USHORT prevBufferSize = 0;
-
     KIRQL oldIrql;
     KeAcquireSpinLock(&irpOpsLock, &oldIrql);
 
-    while (irpOpsSize) {
+    while (irpOpsSize > 0) {
         irpEntryList = RemoveHeadList(&irpOps);
         irpOpsSize--;
         PIRP_ENTRY irp =
             (PIRP_ENTRY)CONTAINING_RECORD(irpEntryList, IRP_ENTRY, entry);
-        UNICODE_STRING FilePath = irp->filePath;
+        
         PDRIVER_MESSAGE irpMsg = &(irp->data);
-        USHORT nameBufferSize = FilePath.Length;
-        irpMsg->next = nullptr;
-        irpMsg->filePath.Buffer = nullptr;
-        if (FilePath.Length) {
-            irpMsg->filePath.Length = nameBufferSize;
-            irpMsg->filePath.MaximumLength = nameBufferSize;
-        } else {
-            irpMsg->filePath.Length = 0;
-            irpMsg->filePath.MaximumLength = 0;
+        USHORT nameBufferSize = irp->filePath.Length;
+        if (nameBufferSize > MAX_FILE_NAME_SIZE) {
+            nameBufferSize = MAX_FILE_NAME_SIZE;
         }
 
-        if (sizeof(DRIVER_MESSAGE) + nameBufferSize
-            >= BufferSizeRemain) {  // return to irps list, not enough space
+        // Align the name buffer size to 8 bytes for the next DRIVER_MESSAGE
+        USHORT alignedNameBufferSize = (nameBufferSize + 7) & ~7;
+
+        ULONG requiredSize = sizeof(DRIVER_MESSAGE) + alignedNameBufferSize;
+
+        if (requiredSize > BufferSizeRemain) {
             InsertHeadList(&irpOps, irpEntryList);
             irpOpsSize++;
             break;
-        } else {
-            if (Prev != nullptr) {
-                Prev->next = PDRIVER_MESSAGE(
-                    OutputBuffer + sizeof(DRIVER_MESSAGE)
-                    + prevBufferSize);  // PrevFilePath might be 0 size
-                if (prevBufferSize) {
-                    Prev->filePath.Buffer = PWCH(
-                        OutputBuffer
-                        + sizeof(
-                            DRIVER_MESSAGE));  // filePath buffer is after irp
-                }
-                RtlCopyMemory(
-                    OutputBuffer,
-                    Prev,
-                    sizeof(DRIVER_MESSAGE));  // copy previous irp
-                OutputBuffer += sizeof(DRIVER_MESSAGE);
-                outHeader.addSize(sizeof(DRIVER_MESSAGE));
-                *ReturnOutputBufferLength += sizeof(DRIVER_MESSAGE);
-                if (prevBufferSize) {
-                    RtlCopyMemory(
-                        OutputBuffer,
-                        PrevEntry->Buffer,
-                        prevBufferSize);  // copy previous filePath
-                    OutputBuffer += prevBufferSize;
-                    outHeader.addSize(prevBufferSize);
-                    *ReturnOutputBufferLength += prevBufferSize;
-                }
-                delete PrevEntry;
-            }
         }
 
-        PrevEntry = irp;
-        Prev = irpMsg;
-        prevBufferSize = nameBufferSize;
-        if (prevBufferSize > MAX_FILE_NAME_SIZE)
-            prevBufferSize = MAX_FILE_NAME_SIZE;
-        BufferSizeRemain -= (sizeof(DRIVER_MESSAGE) + prevBufferSize);
+        // We don't need the linked list anymore
+        irpMsg->next = nullptr;
+        
+        if (nameBufferSize > 0) {
+            irpMsg->filePath.Length = nameBufferSize;
+            irpMsg->filePath.MaximumLength = nameBufferSize;
+            // The buffer will be located right after the DRIVER_MESSAGE structure
+            irpMsg->filePath.Buffer = (PWCH)(CurrentBuffer + sizeof(DRIVER_MESSAGE));
+        } else {
+            irpMsg->filePath.Length = 0;
+            irpMsg->filePath.MaximumLength = 0;
+            irpMsg->filePath.Buffer = nullptr;
+        }
+
+        // Copy the DRIVER_MESSAGE structure
+        RtlCopyMemory(CurrentBuffer, irpMsg, sizeof(DRIVER_MESSAGE));
+        
+        // Copy the file path if it exists
+        if (nameBufferSize > 0) {
+            RtlCopyMemory(CurrentBuffer + sizeof(DRIVER_MESSAGE), irp->filePath.Buffer, nameBufferSize);
+        }
+        
+        CurrentBuffer += requiredSize;
+        BufferSizeRemain -= requiredSize;
+
+        outHeader.addSize(requiredSize);
+        *ReturnOutputBufferLength += requiredSize;
         outHeader.addOp();
+        
+        delete irp;
     }
     KeReleaseSpinLock(&irpOpsLock, oldIrql);
-    if (prevBufferSize > MAX_FILE_NAME_SIZE)
-        prevBufferSize = MAX_FILE_NAME_SIZE;
-    if (Prev != nullptr && PrevEntry != nullptr) {
-        Prev->next = nullptr;
-        if (prevBufferSize) {
-            Prev->filePath.Buffer = PWCH(
-                OutputBuffer
-                + sizeof(DRIVER_MESSAGE));  // filePath buffer is after irp
-        }
-        RtlCopyMemory(
-            OutputBuffer,
-            Prev,
-            sizeof(DRIVER_MESSAGE));  // copy previous irp
-        OutputBuffer += sizeof(DRIVER_MESSAGE);
-        outHeader.addSize(sizeof(DRIVER_MESSAGE));
-        *ReturnOutputBufferLength += sizeof(DRIVER_MESSAGE);
-        if (prevBufferSize) {
-            RtlCopyMemory(
-                OutputBuffer,
-                PrevEntry->Buffer,
-                prevBufferSize);  // copy previous filePath
-            OutputBuffer += prevBufferSize;
-            outHeader.addSize(prevBufferSize);
-            *ReturnOutputBufferLength += prevBufferSize;
-        }
-        delete PrevEntry;
-    }
 
     if (outHeader.numOps()) {
-        outHeader.data =
-            PDRIVER_MESSAGE((PCHAR)Buffer + sizeof(RWD_REPLY_IRPS));
+        outHeader.data = (PDRIVER_MESSAGE)(OutputBuffer + sizeof(RWD_REPLY_IRPS));
     }
 
-    RtlCopyMemory((PCHAR)Buffer, &(outHeader), sizeof(RWD_REPLY_IRPS));
+    RtlCopyMemory(OutputBuffer, &outHeader, sizeof(RWD_REPLY_IRPS));
 }
 
 LIST_ENTRY DriverData::GetAllEntries() {

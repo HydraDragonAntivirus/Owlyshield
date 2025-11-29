@@ -316,14 +316,20 @@ impl ReplyIrp {
     fn unpack_drivermsg(&self) -> Vec<&CDriverMsg> {
         let mut res = vec![];
         unsafe {
-            let mut msg = &*self.data;
-            res.push(msg);
-            for _ in 0..(self.num_ops) {
-                if msg.next.is_null() {
+            let mut current_ptr = self.data as *const u8;
+            for _ in 0..self.num_ops {
+                if current_ptr.is_null() {
                     break;
                 }
-                msg = &*msg.next;
+                let msg = &*(current_ptr as *const CDriverMsg);
                 res.push(msg);
+                
+                let name_buffer_size = msg.filepath.length as usize;
+                // Align to 8 bytes
+                let aligned_name_buffer_size = (name_buffer_size + 7) & !7;
+                let total_size = mem::size_of::<CDriverMsg>() + aligned_name_buffer_size;
+                
+                current_ptr = current_ptr.add(total_size);
             }
         }
         res
