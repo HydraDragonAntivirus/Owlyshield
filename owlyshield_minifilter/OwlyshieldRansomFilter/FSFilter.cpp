@@ -939,8 +939,9 @@ FSProcessCreateIrp(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS F
         return FLT_POSTOP_FINISHED_PROCESSING;
     }
     newItem->Gid = gid;
-    DbgPrint("!!! FSFilter: Registring new irp for Gid: %d with pid: %d\n", gid,
-             newItem->PID); // TODO: incase it doesnt exist we can add it with our method that checks for system process
+    if (IS_DEBUG_IRP)
+        DbgPrint("!!! FSFilter: Registring new irp for Gid: %d with pid: %d\n", gid,
+                 newItem->PID); // TODO: incase it doesnt exist we can add it with our method that checks for system process
 
     // get file id
     hr = CopyFileIdInfo(Data, newItem);
