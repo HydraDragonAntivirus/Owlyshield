@@ -584,7 +584,8 @@ FSProcessPreOperartion(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJEC
         // save context for post, we calculate the entropy of read, we pass the irp to application on post op
         *CompletionContext = newEntry;
         // Keeping user's DbgPrint here
-        DbgPrint("FsFilter: IRP READ WITH CALLBACK! ****************** \n");
+        if (IS_DEBUG_IRP)
+            DbgPrint("FsFilter: IRP READ WITH CALLBACK! ****************** \n");
         return FLT_PREOP_SUCCESS_WITH_CALLBACK;
     }
     case IRP_MJ_CLEANUP:
@@ -1063,18 +1064,34 @@ FSProcessPostReadIrp(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS
     }
     entry->data.MemSizeUsed = (ULONG)Data->IoStatus.Information; // successful read data
     // we catch EXCEPTION_EXECUTE_HANDLER so to prevent crash when calculating
-    __try
+    KFLOATING_SAVE floatingSave;
+    NTSTATUS fpStatus = KeSaveFloatingPointState(&floatingSave);
+
+    if (NT_SUCCESS(fpStatus))
     {
-        entry->data.Entropy = shannonEntropy((PUCHAR)ReadBuffer, Data->IoStatus.Information);
-        entry->data.isEntropyCalc = TRUE;
+        __try
+        {
+            entry->data.Entropy = shannonEntropy((PUCHAR)ReadBuffer, Data->IoStatus.Information);
+            entry->data.isEntropyCalc = TRUE;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            KeRestoreFloatingPointState(&floatingSave);
+            delete entry;
+            // fail the irp request
+            Data->IoStatus.Status = STATUS_INTERNAL_ERROR;
+            Data->IoStatus.Information = 0;
+            return FLT_POSTOP_FINISHED_PROCESSING;
+        }
+        KeRestoreFloatingPointState(&floatingSave);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER)
+    else
     {
-        delete entry;
-        // fail the irp request
-        Data->IoStatus.Status = STATUS_INTERNAL_ERROR;
-        Data->IoStatus.Information = 0;
-        return FLT_POSTOP_FINISHED_PROCESSING;
+        if (IS_DEBUG_IRP)
+            DbgPrint("!!! FSFilter: Failed to save FPU state on Read (Status: 0x%X), skipping entropy calculation\n",
+                     fpStatus);
+        entry->data.isEntropyCalc = FALSE;
+        entry->data.Entropy = 0;
     }
     if (IS_DEBUG_IRP)
         DbgPrint("!!! FSFilter: Addung entry to irps IRP_MJ_READ\n");
@@ -1102,24 +1119,47 @@ FSProcessPostReadSafe(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECT
                                                         NormalPagePriority | MdlMappingNoExecute);
         if (ReadBuffer != NULL)
         {
-            __try
+            entry->data.MemSizeUsed = Data->IoStatus.Information; // successful read data.
+
+            KFLOATING_SAVE floatingSave;
+            NTSTATUS fpStatus = KeSaveFloatingPointState(&floatingSave);
+
+            if(NT_SUCCESS(fpStatus))
             {
-                entry->data.Entropy = shannonEntropy((PUCHAR)ReadBuffer, Data->IoStatus.Information);
-                entry->data.MemSizeUsed = Data->IoStatus.Information;
-                entry->data.isEntropyCalc = TRUE;
-                if (IS_DEBUG_IRP)
-                    DbgPrint("!!! FSFilter: Addung entry to irps IRP_MJ_READ\n");
-                if (driverData->AddIrpMessage(entry))
+                __try
                 {
-                    return FLT_POSTOP_FINISHED_PROCESSING;
+                    entry->data.Entropy = shannonEntropy((PUCHAR)ReadBuffer, Data->IoStatus.Information);
+                    entry->data.isEntropyCalc = TRUE;
                 }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    KeRestoreFloatingPointState(&floatingSave);
+                    // Entropy calculation failed. Reset flags.
+                    entry->data.isEntropyCalc = FALSE;
+                    entry->data.Entropy = 0;
+                    status = STATUS_INTERNAL_ERROR; // Indicate an internal error happened
+                }
+                KeRestoreFloatingPointState(&floatingSave);
             }
-            __except (EXCEPTION_EXECUTE_HANDLER)
+            else
             {
-                status = STATUS_INTERNAL_ERROR;
+                // Failed to save FPU state, skip entropy calculation
+                entry->data.isEntropyCalc = FALSE;
+                entry->data.Entropy = 0;
             }
-        }
-        status = STATUS_INSUFFICIENT_RESOURCES;
+
+            if (IS_DEBUG_IRP)
+                DbgPrint("!!! FSFilter: Adding entry to irps IRP_MJ_READ (Safe)\n");
+
+            if (NT_SUCCESS(status) && driverData->AddIrpMessage(entry))
+            {
+                // Successfully added message, don't delete entry here.
+                return FLT_POSTOP_FINISHED_PROCESSING;
+            }
+            // If we reached here, either status was not SUCCESS, or AddIrpMessage failed.
+            // In either case, fall through to delete entry.
+        } // End of if (ReadBuffer != NULL)
+
     }
     delete entry;
     return FLT_POSTOP_FINISHED_PROCESSING;
