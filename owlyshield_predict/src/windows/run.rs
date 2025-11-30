@@ -120,7 +120,7 @@ pub fn run() {
                         .whitelist(&whitelist)
                         .process_record_handler(Box::new(ProcessRecordHandlerLive::new(
                             &config, Box::new(WindowsThreatHandler::from(driver)),
-                        )));
+                        ).unwrap()));
                 }
 
                 if cfg!(feature = "novelty") {

@@ -1,4 +1,5 @@
 pub mod predictor {
+    use std::error::Error;
     use crate::config::Config;
     use crate::predictions::prediction::input_tensors::Timestep;
     use crate::predictions::prediction::input_tensors::VecvecCappedF32;
@@ -262,6 +263,7 @@ pub mod predictor {
 }
 
 pub mod process_record_handling {
+    use std::error::Error;
     use std::path::PathBuf;
     use std::thread;
     use std::time::Duration;
