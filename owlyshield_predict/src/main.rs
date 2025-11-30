@@ -34,7 +34,7 @@ use crate::connectors::register::Connectors;
 #[cfg(target_os = "windows")]
 use crate::driver_com::Driver;
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-use std::{env, path::Path, sync::LazyLock};
+use std::{env, path::Path, sync::LazyLock, error::Error}; // <-- ADDED: use std::error::Error;
 
 // Conditionally compile AVIntegration `use` statement
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]

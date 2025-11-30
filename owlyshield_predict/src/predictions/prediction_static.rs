@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use crate::config::Config;
@@ -45,7 +45,7 @@ impl TfLiteStatic {
             .read_to_end(&mut malapi)?;
 
         Ok(TfLiteStatic {
-            model: Model::from_file(&model_path_model.as_os_str().to_string_lossy()).map_err(|_| Box::new(io::Error::new(io::ErrorKind::Other, "Failed to load TFLite static model")) as Box<dyn Error>)?,
+            model: Model::from_file(&model_path_model.as_os_str().to_string_lossy())?,
             means: serde_json::from_slice(means.as_slice())?,
             stdvs: serde_json::from_slice(stdvs.as_slice())?,
             malapi: serde_json::from_slice(malapi.as_slice())?,
