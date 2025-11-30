@@ -163,13 +163,13 @@ pub mod predictor {
     }
 
     impl PredictorHandlerBehaviouralMLP<'_> {
-        pub fn new(config: &Config) -> Result<PredictorHandlerBehaviouralMLP<'_>, Box<dyn Error>> {
-            Ok(PredictorHandlerBehaviouralMLP {
+        pub fn new(config: &Config) -> PredictorHandlerBehaviouralMLP<'_> {
+            PredictorHandlerBehaviouralMLP {
                 config,
                 timesteps: VecvecCappedF32::new(PREDMTRXCOLS, PREDMTRXROWS),
                 predictions_count: 0,
-                tflite_malware: TfLiteMalware::new(config)?,
-            })
+                tflite_malware: TfLiteMalware::new(config),
+            }
         }
     }
 
@@ -190,12 +190,12 @@ pub mod predictor {
     }
 
     impl PredictorHandlerStatic {
-        pub fn new(config: &Config) -> Result<PredictorHandlerStatic, Box<dyn Error>> {
-            Ok(PredictorHandlerStatic {
-                predictor_static: TfLiteStatic::new(config)?,
+        pub fn new(config: &Config) -> PredictorHandlerStatic {
+            PredictorHandlerStatic {
+                predictor_static: TfLiteStatic::new(config),
                 prediction: None,
                 is_prediction_calculated: false,
-            })
+            }
         }
     }
 
@@ -213,11 +213,11 @@ pub mod predictor {
     }
 
     impl PredictorMalwareBehavioural<'_> {
-        pub fn new(config: &Config) -> Result<PredictorMalwareBehavioural<'_>, Box<dyn Error>> {
-            Ok(PredictorMalwareBehavioural {
-                mlp: PredictorHandlerBehaviouralMLP::new(config)?,
+        pub fn new(config: &Config) -> PredictorMalwareBehavioural<'_> {
+            PredictorMalwareBehavioural {
+                mlp: PredictorHandlerBehaviouralMLP::new(config),
                 xgboost: PredictionhandlerBehaviouralXGBoost::new(config),
-            })
+            }
         }
     }
 
@@ -243,11 +243,11 @@ pub mod predictor {
     }
 
     impl PredictorMalware<'_> {
-        pub fn new(config: &Config) -> Result<PredictorMalware<'_>, Box<dyn Error>> {
-            Ok(PredictorMalware {
-                predictor_behavioural: PredictorMalwareBehavioural::new(config)?,
-                predictor_static: PredictorHandlerStatic::new(config)?,
-            })
+        pub fn new(config: &Config) -> PredictorMalware<'_> {
+            PredictorMalware {
+                predictor_behavioural: PredictorMalwareBehavioural::new(config),
+                predictor_static: PredictorHandlerStatic::new(config),
+            }
         }
 
         fn ponderate_prediction(&self, precord: &ProcessRecord, pred_s: f32, pred_b: f32) -> f32 {
@@ -454,12 +454,12 @@ pub mod process_record_handling {
         pub fn new(
             config: &'a Config,
             threat_handler: Box<dyn ThreatHandler>
-        ) -> Result<ProcessRecordHandlerLive<'a>, Box<dyn Error>> {
-            Ok(ProcessRecordHandlerLive {
+        ) -> ProcessRecordHandlerLive<'a> {
+            ProcessRecordHandlerLive {
                 config,
                 threat_handler,
-                predictor_malware: PredictorMalware::new(config)?,
-            })
+                predictor_malware: PredictorMalware::new(config),
+            }
         }
     }
 

@@ -34,7 +34,7 @@ use crate::connectors::register::Connectors;
 #[cfg(target_os = "windows")]
 use crate::driver_com::Driver;
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
-use std::{env, path::Path, sync::LazyLock, error::Error}; // <-- ADDED: use std::error::Error;
+use std::{env, path::Path, sync::LazyLock}; // <-- MODIFIED: Removed unused Mutex
 
 // Conditionally compile AVIntegration `use` statement
 #[cfg(all(target_os = "windows", feature = "hydradragon"))]
@@ -96,17 +96,8 @@ pub fn init_hydra_dragon() -> Option<AVIntegration<'static>> {
         // Construct the Config and Predictor locally, then build AVIntegration.
         // Use the static CONFIG to provide the 'static lifetime.
         let config: &'static Config = &CONFIG;
-        match PredictorMalware::new(config) {
-            Ok(predictor_malware) => {
-                Some(AVIntegration::new(config, predictor_malware))
-            }
-            Err(e) => {
-                println!("Error initializing PredictorMalware for HydraDragon integration: {}", e);
-                // Depending on the logging setup in main.rs, you might want to call Logging::error directly here.
-                // For now, println! provides visibility.
-                None // Return None to indicate that integration failed
-            }
-        }
+        let predictor_malware = PredictorMalware::new(config);
+        Some(AVIntegration::new(config, predictor_malware))
     } else {
         None
     }
