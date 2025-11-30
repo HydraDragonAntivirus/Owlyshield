@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -26,32 +27,29 @@ pub struct TfLiteStatic {
 }
 
 impl TfLiteStatic {
-    pub fn new(config: &Config) -> TfLiteStatic {
+    pub fn new(config: &Config) -> Result<TfLiteStatic, Box<dyn Error>> {
         let model_path_means = config.model_path(MEANS);
         let model_path_stdvs = config.model_path(STDVS);
         let model_path_malapi = config.model_path(MALAPI);
         let model_path_model = config.model_path(MODEL);
         let mut means = Vec::new();
-        BufReader::new(File::open(model_path_means).unwrap())
-            .read_to_end(&mut means)
-            .unwrap();
+        BufReader::new(File::open(model_path_means)?)
+            .read_to_end(&mut means)?;
 
         let mut stdvs = Vec::new();
-        BufReader::new(File::open(model_path_stdvs).unwrap())
-            .read_to_end(&mut stdvs)
-            .unwrap();
+        BufReader::new(File::open(model_path_stdvs)?)
+            .read_to_end(&mut stdvs)?;
 
         let mut malapi = Vec::new();
-        BufReader::new(File::open(model_path_malapi).unwrap())
-            .read_to_end(&mut malapi)
-            .unwrap();
+        BufReader::new(File::open(model_path_malapi)?)
+            .read_to_end(&mut malapi)?;
 
-        TfLiteStatic {
-            model: Model::from_file(&model_path_model.as_os_str().to_string_lossy()).unwrap(),
-            means: serde_json::from_slice(means.as_slice()).unwrap(),
-            stdvs: serde_json::from_slice(stdvs.as_slice()).unwrap(),
-            malapi: serde_json::from_slice(malapi.as_slice()).unwrap(),
-        }
+        Ok(TfLiteStatic {
+            model: Model::from_file(&model_path_model.as_os_str().to_string_lossy())?,
+            means: serde_json::from_slice(means.as_slice())?,
+            stdvs: serde_json::from_slice(stdvs.as_slice())?,
+            malapi: serde_json::from_slice(malapi.as_slice())?,
+        })
     }
 
     pub fn make_prediction(&self, path: &Path) -> Option<f32> {
@@ -68,12 +66,12 @@ impl TfLiteStatic {
             let builder = Interpreter::builder();
             let mut interpreter = builder
                 .build(&self.model, 1, input_vec_scaled.len())
-                .unwrap();
+                .unwrap(); // This unwrap is still here, but it's during actual prediction.
 
             let mut inputs = interpreter.inputs();
             let dst = inputs[0].bytes_mut();
             LittleEndian::write_f32_into(input_vec_scaled.as_slice(), dst);
-            interpreter.invoke().unwrap();
+            interpreter.invoke().unwrap(); // This unwrap is still here, but it's during actual prediction.
             let outputs = interpreter.outputs();
 
             let y_pred = outputs[0].f32s()[0];
