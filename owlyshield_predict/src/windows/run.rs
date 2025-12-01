@@ -96,6 +96,11 @@ pub fn run() {
 
             //NEW
             thread::spawn(move || {
+                // Initialize HydraDragon on this thread if the feature is enabled
+                // This is critical because the TFLite models are not Send/Sync
+                #[cfg(all(target_os = "windows", feature = "hydradragon"))]
+                let _hydra_dragon_integration = crate::init_hydra_dragon(&config);
+
                 let whitelist = whitelist::WhiteList::from(
                     &Path::new(&config[Param::ConfigPath])
                         .join(Path::new("exclusions.txt")),
